@@ -1,0 +1,23 @@
+{
+  "name": "controle-mensalidades-escola",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "db:apply": "node scripts/apply-schema.mjs",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.75.0",
+    "dotenv": "^17.4.2",
+    "pg": "^8.21.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "vite": "^7.2.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.1.1"
+  }
+}
