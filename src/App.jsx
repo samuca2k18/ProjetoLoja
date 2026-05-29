@@ -335,10 +335,83 @@ function App() {
       });
   }, [data.enrollments, month, statusByEnrollment]);
 
+  const groupedEnrollments = useMemo(() => {
+    const groups = new Map();
+
+    for (const enrollment of enrichedEnrollments) {
+      const studentId = enrollment.student?.id || enrollment.id;
+      const groupKey = String(studentId);
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, {
+          id: `student-${groupKey}`,
+          student: enrollment.student,
+          guardian: enrollment.guardian,
+          studentName: enrollment.studentName,
+          guardianName: enrollment.guardianName,
+          contact: enrollment.contact,
+          dueDayCandidates: [],
+          enrollmentIds: [],
+          modalityIds: [],
+          modalityNames: [],
+          rows: [],
+          totalValue: 0,
+          primaryEnrollment: enrollment,
+        });
+      }
+
+      const group = groups.get(groupKey);
+      group.rows.push(enrollment);
+      group.enrollmentIds.push(enrollment.id);
+      group.totalValue += Number(enrollment.monthly_value || 0);
+      if (enrollment.modality?.id && !group.modalityIds.includes(enrollment.modality.id)) {
+        group.modalityIds.push(enrollment.modality.id);
+      }
+      if (enrollment.modalityName && !group.modalityNames.includes(enrollment.modalityName)) {
+        group.modalityNames.push(enrollment.modalityName);
+      }
+      if (enrollment.status === "active") {
+        group.dueDayCandidates.push(Number(enrollment.due_day));
+      }
+    }
+
+    return Array.from(groups.values())
+      .map((group) => {
+        const summaryStatus = getGroupedPaymentStatus(group.rows);
+        const fallbackDueDay = Number(group.primaryEnrollment?.due_day || 10);
+        const activeDueDay = group.dueDayCandidates
+          .filter((value) => Number.isFinite(value))
+          .sort((a, b) => a - b)[0];
+
+        return {
+          id: group.id,
+          student: group.student,
+          guardian: group.guardian,
+          studentName: group.studentName,
+          guardianName: group.guardianName,
+          contact: group.contact,
+          due_day: Number.isFinite(activeDueDay) ? activeDueDay : fallbackDueDay,
+          modalityIds: group.modalityIds,
+          modalityName: group.modalityNames.join(", "),
+          monthly_value: Number(group.totalValue.toFixed(2)),
+          paymentStatusKey: summaryStatus.key,
+          paymentStatusLabel: summaryStatus.label,
+          paymentStatusClass: summaryStatus.className,
+          status: summaryStatus.isActive ? "active" : "paused",
+          enrollmentIds: group.enrollmentIds,
+          primaryEnrollment: group.primaryEnrollment,
+        };
+      })
+      .sort(
+        (a, b) =>
+          a.studentName.localeCompare(b.studentName) ||
+          a.modalityName.localeCompare(b.modalityName),
+      );
+  }, [enrichedEnrollments]);
+
   const filteredEnrollments = useMemo(() => {
     const term = normalizeText(search);
 
-    return enrichedEnrollments.filter((enrollment) => {
+    return groupedEnrollments.filter((enrollment) => {
       const matchesSearch =
         !term ||
         normalizeText(enrollment.studentName).includes(term) ||
@@ -346,15 +419,16 @@ function App() {
         normalizeText(enrollment.guardian?.email).includes(term) ||
         normalizeText(enrollment.contact).includes(term) ||
         normalizeText(enrollment.modalityName).includes(term);
-      const matchesModality = modalityFilter === "all" || enrollment.modality?.id === modalityFilter;
+      const matchesModality =
+        modalityFilter === "all" || enrollment.modalityIds?.includes(modalityFilter);
       const matchesStatus = statusFilter === "all" || enrollment.paymentStatusKey === statusFilter;
 
       return matchesSearch && matchesModality && matchesStatus;
     });
-  }, [enrichedEnrollments, modalityFilter, search, statusFilter]);
+  }, [groupedEnrollments, modalityFilter, search, statusFilter]);
 
   const pendingEnrollments = useMemo(() => {
-    return enrichedEnrollments
+    return groupedEnrollments
       .filter((enrollment) => enrollment.status === "active" && enrollment.paymentStatusKey !== "paid")
       .sort(
         (a, b) =>
@@ -362,7 +436,7 @@ function App() {
           a.guardianName.localeCompare(b.guardianName) ||
           a.studentName.localeCompare(b.studentName),
       );
-  }, [enrichedEnrollments]);
+  }, [groupedEnrollments]);
 
   const paymentOptions = useMemo(() => {
     if (!selectedEnrollment) return [];
@@ -678,18 +752,24 @@ function App() {
   }
 
   async function handleEnrollmentStatus(enrollment) {
+    const enrollmentIds = enrollment.enrollmentIds?.length ? enrollment.enrollmentIds : [enrollment.id];
+    if (!enrollmentIds.length) {
+      setError("Matriculas invalidas para atualizar status.");
+      return;
+    }
+
     const nextStatus = enrollment.status === "active" ? "paused" : "active";
     const { error: updateError } = await supabase
       .from("student_enrollments")
       .update({ status: nextStatus })
-      .eq("id", enrollment.id);
+      .in("id", enrollmentIds);
 
     if (updateError) {
       setError(updateError.message);
       return;
     }
 
-    showToast(nextStatus === "active" ? "Matricula ativada." : "Matricula pausada.");
+    showToast(nextStatus === "active" ? "Matriculas ativadas." : "Matriculas pausadas.");
     loadData();
   }
 
@@ -1432,7 +1512,10 @@ function EnrollmentTable({
                       )
                     ) : (
                       <span className="table-actions">
-                        <button className="table-action secondary" onClick={() => onEditEnrollment(enrollment)}>
+                        <button
+                          className="table-action secondary"
+                          onClick={() => onEditEnrollment(enrollment.primaryEnrollment || enrollment)}
+                        >
                           Editar
                         </button>
                         <button className="table-action secondary" onClick={() => onEnrollmentStatus(enrollment)}>
@@ -1837,6 +1920,23 @@ function getPaymentStatus(enrollment, paymentStatus, month) {
   }
 
   return { key: "pending", label: "Pendente", className: "warning" };
+}
+
+function getGroupedPaymentStatus(enrollments) {
+  const activeEnrollments = enrollments.filter((enrollment) => enrollment.status === "active");
+  if (!activeEnrollments.length) {
+    return { key: "inactive", label: "Inativo", className: "neutral", isActive: false };
+  }
+
+  if (activeEnrollments.every((enrollment) => enrollment.paymentStatusKey === "paid")) {
+    return { key: "paid", label: "Pago", className: "success", isActive: true };
+  }
+
+  if (activeEnrollments.some((enrollment) => enrollment.paymentStatusKey === "late")) {
+    return { key: "late", label: "Atrasado", className: "danger", isActive: true };
+  }
+
+  return { key: "pending", label: "Pendente", className: "warning", isActive: true };
 }
 
 function groupPayments(payments, getKey) {
