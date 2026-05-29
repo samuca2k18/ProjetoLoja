@@ -461,7 +461,8 @@ function App() {
 
   async function handleAddEnrollment(event) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     const modalityIds = form.getAll("modality_ids").filter(Boolean);
 
     if (!modalityIds.length) {
@@ -502,7 +503,7 @@ function App() {
 
       if (enrollmentError) throw enrollmentError;
 
-      event.currentTarget.reset();
+      formElement.reset();
       showToast("Cadastro salvo.");
       loadData();
     } catch (requestError) {
@@ -692,6 +693,35 @@ function App() {
     loadData();
   }
 
+  async function handleDeleteStudent(enrollment) {
+    const studentId = enrollment?.student?.id;
+    const studentName = enrollment?.studentName || enrollment?.student?.full_name || "este aluno";
+
+    if (!studentId) {
+      setError("Aluno invalido para exclusao.");
+      return;
+    }
+
+    if (!window.confirm(`Excluir ${studentName}? Isso remove todas as matriculas desse aluno.`)) return;
+
+    const { error: deleteError } = await supabase.from("students").delete().eq("id", studentId);
+
+    if (deleteError) {
+      setError(deleteError.message);
+      return;
+    }
+
+    if (editingEnrollment?.student?.id === studentId) {
+      setEditingEnrollment(null);
+    }
+    if (selectedEnrollment?.student?.id === studentId) {
+      setSelectedEnrollment(null);
+    }
+
+    showToast("Aluno excluido.");
+    loadData();
+  }
+
   async function handleDeletePayment(paymentId) {
     if (!window.confirm("Estornar esse pagamento?")) return;
 
@@ -850,6 +880,7 @@ function App() {
             onCancelEdit={() => setEditingEnrollment(null)}
             onUpdateEnrollment={handleUpdateEnrollment}
             onEnrollmentStatus={handleEnrollmentStatus}
+            onDeleteStudent={handleDeleteStudent}
           />
         )}
 
@@ -1100,6 +1131,7 @@ function StudentsView(props) {
           context="students"
           onEditEnrollment={props.setEditingEnrollment}
           onEnrollmentStatus={props.onEnrollmentStatus}
+          onDeleteStudent={props.onDeleteStudent}
         />
       </div>
       <aside className="panel">
@@ -1339,7 +1371,14 @@ function EnrollmentFilters({
   );
 }
 
-function EnrollmentTable({ enrollments, context, onEditEnrollment, onSelect, onEnrollmentStatus }) {
+function EnrollmentTable({
+  enrollments,
+  context,
+  onDeleteStudent,
+  onEditEnrollment,
+  onSelect,
+  onEnrollmentStatus,
+}) {
   if (!enrollments.length) {
     return <EmptyState title="Nenhum cadastro encontrado" text="Altere os filtros ou cadastre um novo aluno." />;
   }
@@ -1398,6 +1437,10 @@ function EnrollmentTable({ enrollments, context, onEditEnrollment, onSelect, onE
                         </button>
                         <button className="table-action secondary" onClick={() => onEnrollmentStatus(enrollment)}>
                           {enrollment.status === "active" ? "Pausar" : "Ativar"}
+                        </button>
+                        <button className="table-action danger" onClick={() => onDeleteStudent(enrollment)}>
+                          {icons.trash}
+                          Excluir aluno
                         </button>
                       </span>
                     )}

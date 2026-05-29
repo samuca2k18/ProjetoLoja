@@ -169,11 +169,15 @@ create index if not exists payment_statuses_reference_month_idx on public.paymen
 
 insert into public.modalities (name, default_monthly_value)
 values
-  ('Piano', 180),
-  ('Violao', 150),
-  ('Bateria', 170),
-  ('Canto', 160),
-  ('Pintura', 140),
+  ('Piano', 350),
+  ('Teclado', 330),
+  ('Guitarra', 330),
+  ('Violino', 330),
+  ('Ukulele', 330),
+  ('Violão', 330),
+  ('Bateria', 330),
+  ('Canto', 330),
+  ('Pintura', 0),
   ('Sem modalidade', 0)
 on conflict (name) do nothing;
 
@@ -712,11 +716,12 @@ using (public.is_staff_or_admin())
 with check (public.is_staff_or_admin());
 
 drop policy if exists "Admins can delete students" on public.students;
-create policy "Admins can delete students"
+drop policy if exists "Staff can delete students" on public.students;
+create policy "Staff can delete students"
 on public.students
 for delete
 to authenticated
-using (public.is_admin());
+using (public.is_staff_or_admin());
 
 drop policy if exists "Staff can read enrollments" on public.student_enrollments;
 create policy "Staff can read enrollments"
