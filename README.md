@@ -1,6 +1,6 @@
-# Controle de Mensalidades - Escola de Música
+# Controle de Mensalidades - Escola de Musica
 
-Aplicação React + Supabase para controlar alunos, mensalidades e pagamentos.
+Aplicacao React + Supabase para funcionarios controlarem alunos, responsaveis, modalidades e pagamentos mensais.
 
 ## Stack
 
@@ -8,19 +8,20 @@ Aplicação React + Supabase para controlar alunos, mensalidades e pagamentos.
 - Backend: Supabase Auth + Postgres + RLS
 - Banco: SQL em `supabase/schema.sql`
 
-## Configuração
+## Configuracao
 
 1. Crie um projeto no Supabase.
-2. Abra o SQL Editor e rode o arquivo `supabase/schema.sql`.
-3. Copie `.env.example` para `.env.local`.
-4. Preencha:
+2. Em Authentication > Providers > Email, desligue a opcao de confirmar email.
+3. Abra o SQL Editor e rode o arquivo `supabase/schema.sql`.
+4. Copie `.env.example` para `.env.local`.
+5. Preencha:
 
 ```env
 VITE_SUPABASE_URL=https://SEU-PROJETO.supabase.co
 VITE_SUPABASE_PUBLISHABLE_KEY=sua-chave-publishable-ou-anon
 ```
 
-5. Instale e rode:
+6. Instale e rode:
 
 ```bash
 npm install
@@ -39,42 +40,49 @@ Depois rode:
 npm run db:apply
 ```
 
-Se preferir não colocar a connection string localmente, rode `supabase/schema.sql` manualmente no SQL Editor. O arquivo usa `create table if not exists`, `alter table ... add column if not exists`, `create or replace function` e recria políticas, então ele também aplica os ajustes novos.
+## Acesso dos funcionarios
 
-## Permissões
+A tela de login nao cria conta publica. Somente funcionarios que ja existem no Supabase Auth conseguem entrar.
 
-Toda conta nova entra como `staff`. Depois de criar a conta do seu pai, rode no SQL Editor:
+Crie os funcionarios em Authentication > Users. O trigger do banco cria o perfil em `public.profiles` automaticamente com role `staff`.
+
+Para transformar alguem em administrador, rode no SQL Editor:
 
 ```sql
 update public.profiles
 set role = 'admin'
-where id = 'ID-DO-USUARIO-DO-SEU-PAI';
+where email = 'email-do-admin@exemplo.com';
 ```
 
-O ID do usuário aparece em Authentication > Users no painel do Supabase.
+## O que existe
 
-## O que já existe
+- Login interno com Supabase Auth, sem tela publica de cadastro.
+- Cadastro de responsavel/familia com nome, email e telefone.
+- Cadastro de aluno ligado ao responsavel.
+- Um aluno pode ter varias modalidades no mesmo cadastro.
+- Pais/responsaveis com varios filhos ficam agrupados pelo mesmo cadastro de responsavel.
+- Funcionarios podem cadastrar responsaveis, alunos, modalidades do aluno e pagamentos.
+- Lancamento de pagamento pode dar baixa em varias matriculas juntas.
+- Cada pagamento guarda o funcionario que lancou a baixa pelo perfil, nome e email.
+- Administrador ve relatorios com responsavel, alunos/modalidades pagos juntos, forma, valor e funcionario que lancou.
+- Administrador corrige data, mes, valor, forma e observacao do pagamento.
+- Administrador estorna pagamentos.
+- Bloqueio de pagamento duplicado por matricula/modalidade no mesmo mes.
+- Tela de pendencias com matriculas em aberto e atrasadas.
+- Exportacao CSV do historico financeiro.
+- RLS habilitado nas tabelas publicas.
 
-- Login/cadastro com Supabase Auth.
-- Cadastro e listagem de alunos.
-- Edição de alunos: nome, telefone, modalidade, mensalidade, vencimento, status e observações.
-- Modalidades iniciais: Piano, Violão, Bateria, Canto e Pintura.
-- Lançamento de pagamento mensal.
-- Correção de pagamento para administrador: aluno, mês, data, valor, forma e observação.
-- Estorno de pagamento para administrador.
-- Bloqueio de pagamento duplicado por aluno/mês.
-- Funcionária vê alunos, pendências e status de pagamento.
-- Funcionária não consulta a tabela de pagamentos nem relatórios financeiros.
-- Tela de pendências com alunos em aberto e atrasados.
-- Administrador vê recebido no dia, no período, pendências e histórico.
-- Administrador filtra relatórios por período e exporta CSV.
-- Administrador gerencia usuários e permissões `staff`/`admin`.
-- RLS habilitado nas tabelas públicas.
+## Modelo do banco
 
-## Próximos passos
+- `guardians`: responsaveis/familias.
+- `students`: alunos.
+- `student_enrollments`: uma matricula por aluno e modalidade.
+- `payments`: pagamento recebido, responsavel pagador e funcionario que lancou.
+- `payment_items`: modalidades/matriculas pagas dentro de um pagamento conjunto.
+- `payment_statuses`: status mensal usado pela tela de pendencias.
+
+## Proximos passos
 
 - Recibos em PDF.
 - Avisos por WhatsApp.
-- Auditoria detalhada das alterações.
-- Tela de modalidades para editar valores padrão sem SQL.
-# ProjetoLoja
+- Tela de modalidades para editar valores padrao sem SQL.

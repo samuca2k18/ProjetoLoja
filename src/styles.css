@@ -575,6 +575,111 @@ tr:last-child td {
   font-size: 0.9rem;
 }
 
+.selected-student small {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.payment-options {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.item-check {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+  padding: 10px;
+}
+
+.item-check input {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+}
+
+.item-check span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.item-check small {
+  color: var(--muted);
+}
+
+.payment-summary {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+  margin-top: 14px;
+  padding: 12px;
+}
+
+.payment-summary span {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.payment-summary strong {
+  font-size: 1.1rem;
+}
+
+.modality-picker {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin: 0;
+  padding: 12px;
+}
+
+.modality-picker legend {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+  padding: 0 6px;
+  text-transform: uppercase;
+}
+
+.modality-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 10px;
+  align-items: center;
+}
+
+.modality-option + .modality-option {
+  margin-top: 9px;
+}
+
+.modality-option span {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--ink);
+  font-size: 0.95rem;
+  font-weight: 800;
+  text-transform: none;
+}
+
+.modality-option input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+}
+
+.report-items {
+  min-width: 240px;
+  max-width: 420px;
+  white-space: normal;
+}
+
 .user-row {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) minmax(220px, 1fr) 160px max-content;
@@ -756,5 +861,15 @@ tr:last-child td {
 
   .bar-row {
     grid-template-columns: 1fr;
+  }
+
+  .modality-option,
+  .payment-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .payment-summary {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
