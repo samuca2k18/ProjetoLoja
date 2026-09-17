@@ -136,8 +136,8 @@ function monthLabel(month) {
 function shortMonthLabel(month) {
   const [year, value] = month.split("-");
   const date = new Date(Number(year), Number(value) - 1, 1);
-  const label = date.toLocaleDateString("pt-BR", { month: "short", year: "2-digit" });
-  return label.replace(".", "");
+  const label = date.toLocaleDateString("pt-BR", { month: "short" });
+  return label.replace(".", "").trim();
 }
 
 function monthsAgoStart(count) {
@@ -166,6 +166,40 @@ function buildMonthlyReceived(payments, monthCount = 12) {
   }
 
   return buckets;
+}
+
+function chartScopePayments(payments, monthCount = 12) {
+  const start = monthsAgoStart(monthCount);
+  return (payments || []).filter((payment) => payment.paid_at >= start);
+}
+
+function buildMethodBreakdown(payments) {
+  const groups = new Map(
+    paymentMethods.map((method) => [
+      method.value,
+      { value: method.value, label: method.label, count: 0, amount: 0 },
+    ]),
+  );
+
+  for (const payment of payments || []) {
+    const key = payment.method || "other";
+    let entry = groups.get(key);
+    if (!entry) {
+      entry = {
+        value: key,
+        label: paymentMethodLabel(key),
+        count: 0,
+        amount: 0,
+      };
+      groups.set(key, entry);
+    }
+    entry.count += 1;
+    entry.amount += Number(payment.amount || 0);
+  }
+
+  return [...groups.values()]
+    .filter((entry) => entry.count > 0)
+    .sort((a, b) => b.amount - a.amount || b.count - a.count);
 }
 
 function normalizeText(value) {
@@ -1395,17 +1429,18 @@ function ReportsView({
   onUpdatePayment,
 }) {
   const byModality = groupPaymentItems(data.payments, (item) => item.enrollment?.modality?.name || "Sem modalidade");
-  const byMethod = groupPayments(data.payments, (payment) => paymentMethodLabel(payment.method));
   const byDay = groupPayments(data.payments, (payment) => formatDate(payment.paid_at));
-  const monthlyReceived = useMemo(
-    () => buildMonthlyReceived(data.chartPayments || data.payments, 12),
+  const chartPayments = useMemo(
+    () => chartScopePayments(data.chartPayments || data.payments, 12),
     [data.chartPayments, data.payments],
   );
+  const monthlyReceived = useMemo(() => buildMonthlyReceived(chartPayments, 12), [chartPayments]);
+  const methodBreakdown = useMemo(() => buildMethodBreakdown(chartPayments), [chartPayments]);
 
   return (
     <>
       <MetricGrid totals={totals} isAdmin />
-      <MonthlyReceivedChart series={monthlyReceived} />
+      <MonthlyReceivedChart series={monthlyReceived} methods={methodBreakdown} />
       <section className="panel report-filter">
         <div className="panel-header">
           <div>
@@ -1427,14 +1462,9 @@ function ReportsView({
           </button>
         </div>
       </section>
-      <section className="split-grid">
-        <div>
-          <ChartPanel title="Recebido por modalidade" values={byModality} />
-          <ChartPanel title="Recebido por forma de pagamento" values={byMethod} />
-        </div>
-        <div>
-          <ChartPanel title="Recebido por dia" values={byDay} />
-        </div>
+      <section className="split-grid report-period-charts">
+        <ChartPanel title="Recebido por modalidade" values={byModality} />
+        <ChartPanel title="Recebido por dia" values={byDay} />
       </section>
       <section className="panel">
         <div className="panel-header">
@@ -1443,8 +1473,8 @@ function ReportsView({
             <p>Veja o responsável, os alunos pagos juntos e quem lançou a baixa.</p>
           </div>
         </div>
-        <div className="table-wrap">
-          <table className="data-table">
+        <div className="table-wrap history-table-wrap">
+          <table className="data-table history-table">
             <thead>
               <tr>
                 <th className="sticky-col">Data</th>
@@ -1453,7 +1483,7 @@ function ReportsView({
                 <th>Forma</th>
                 <th>Valor</th>
                 <th>Lançado por</th>
-                <th>Ação</th>
+                <th className="actions-col">Ação</th>
               </tr>
             </thead>
             <tbody>
@@ -1468,7 +1498,7 @@ function ReportsView({
                     <td>
                       <StaffCell profile={payment.registered_by_profile} />
                     </td>
-                    <td>
+                    <td className="actions-col">
                       <span className="table-actions">
                         <button className="table-action secondary" onClick={() => onEditPayment(payment)}>
                           Editar
@@ -2008,13 +2038,24 @@ function EnrollmentForm({ modalities, onCancel, onSubmit, enrollment }) {
   );
 }
 
-function MonthlyReceivedChart({ series }) {
+function MonthlyReceivedChart({ series, methods = [] }) {
   const max = Math.max(1, ...series.map((item) => item.amount));
-  const chartHeight = 160;
+  const chartHeight = 148;
+  const topPad = 28;
+  const bottomPad = 36;
+  const leftPad = 8;
+  const rightPad = 8;
   const barGap = 8;
-  const barWidth = series.length ? Math.max(18, Math.floor((560 - barGap * (series.length - 1)) / series.length)) : 24;
-  const width = series.length * barWidth + Math.max(0, series.length - 1) * barGap;
+  const innerWidth = 680;
+  const barWidth = series.length
+    ? Math.max(28, Math.floor((innerWidth - barGap * (series.length - 1)) / series.length))
+    : 28;
+  const plotWidth = series.length * barWidth + Math.max(0, series.length - 1) * barGap;
+  const width = leftPad + plotWidth + rightPad;
+  const height = topPad + chartHeight + bottomPad;
   const total = series.reduce((sum, item) => sum + item.amount, 0);
+  const methodTotalCount = methods.reduce((sum, item) => sum + item.count, 0);
+  const methodMax = Math.max(1, ...methods.map((item) => item.amount));
 
   return (
     <section className="panel monthly-chart-panel">
@@ -2028,26 +2069,55 @@ function MonthlyReceivedChart({ series }) {
         <div className="monthly-chart-scroll">
           <svg
             className="monthly-chart"
-            viewBox={`0 0 ${Math.max(width, 320)} ${chartHeight + 36}`}
+            viewBox={`0 0 ${width} ${height}`}
+            width={width}
+            height={height}
+            preserveAspectRatio="xMidYMid meet"
             role="img"
             aria-label="Gráfico de valores recebidos por mês"
           >
+            <line
+              className="monthly-baseline"
+              x1={leftPad}
+              y1={topPad + chartHeight}
+              x2={leftPad + plotWidth}
+              y2={topPad + chartHeight}
+            />
             {series.map((item, index) => {
-              const barHeight = Math.max(item.amount > 0 ? 4 : 0, (item.amount / max) * chartHeight);
-              const x = index * (barWidth + barGap);
-              const y = chartHeight - barHeight;
+              const rawHeight = (item.amount / max) * chartHeight;
+              const barHeight = item.amount > 0 ? Math.max(8, rawHeight) : 2;
+              const x = leftPad + index * (barWidth + barGap);
+              const y = topPad + chartHeight - barHeight;
               return (
                 <g key={item.month}>
                   <title>{`${item.label}: ${formatMoney(item.amount)}`}</title>
                   <rect
-                    className="monthly-bar"
+                    className="monthly-bar-track"
+                    x={x}
+                    y={topPad}
+                    width={barWidth}
+                    height={chartHeight}
+                    rx="8"
+                  />
+                  <rect
+                    className={item.amount > 0 ? "monthly-bar" : "monthly-bar monthly-bar-stub"}
                     x={x}
                     y={y}
                     width={barWidth}
                     height={barHeight}
-                    rx="6"
+                    rx={item.amount > 0 ? "8" : "2"}
                   />
-                  <text className="monthly-label" x={x + barWidth / 2} y={chartHeight + 18} textAnchor="middle">
+                  {item.amount > 0 && (
+                    <text className="monthly-value" x={x + barWidth / 2} y={y - 8} textAnchor="middle">
+                      {formatCompactMoney(item.amount)}
+                    </text>
+                  )}
+                  <text
+                    className="monthly-label"
+                    x={x + barWidth / 2}
+                    y={topPad + chartHeight + 18}
+                    textAnchor="middle"
+                  >
                     {item.label}
                   </text>
                 </g>
@@ -2055,17 +2125,57 @@ function MonthlyReceivedChart({ series }) {
             })}
           </svg>
         </div>
-        <div className="monthly-legend">
-          {series.map((item) => (
-            <div className="monthly-legend-item" key={`legend-${item.month}`}>
-              <strong>{item.label}</strong>
-              <span>{formatMoney(item.amount)}</span>
+
+        <div className="method-breakdown">
+          <div className="method-breakdown-header">
+            <div>
+              <h3>Por forma de pagamento</h3>
+              <p>
+                Mesmos últimos 12 meses · {methodTotalCount}{" "}
+                {methodTotalCount === 1 ? "pagamento" : "pagamentos"}
+              </p>
             </div>
-          ))}
+          </div>
+          {methods.length ? (
+            <div className="method-breakdown-grid">
+              {methods.map((item) => (
+                <article className="method-card" key={item.value}>
+                  <div className="method-card-top">
+                    <strong>{item.label}</strong>
+                    <span className="method-count">
+                      {item.count} {item.count === 1 ? "pagamento" : "pagamentos"}
+                    </span>
+                  </div>
+                  <span className="method-amount">{formatMoney(item.amount)}</span>
+                  <span className="method-track" aria-hidden="true">
+                    <span
+                      className="method-fill"
+                      style={{ width: `${Math.max(10, (item.amount / methodMax) * 100)}%` }}
+                    />
+                  </span>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="muted method-empty">Nenhum pagamento nos últimos 12 meses.</p>
+          )}
         </div>
       </div>
     </section>
   );
+}
+
+function formatCompactMoney(value) {
+  const amount = Number(value || 0);
+  if (amount >= 1000) {
+    return amount.toLocaleString("pt-BR", {
+      style: "currency",
+      currency: "BRL",
+      notation: "compact",
+      maximumFractionDigits: 1,
+    });
+  }
+  return formatMoney(amount);
 }
 
 function ChartPanel({ title, values }) {
