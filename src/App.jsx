@@ -7,6 +7,7 @@ const emptyData = {
   enrollments: [],
   paymentStatuses: [],
   payments: [],
+  chartPayments: [],
   profiles: [],
 };
 
@@ -81,8 +82,8 @@ const icons = {
 const paymentMethods = [
   { value: "pix", label: "Pix" },
   { value: "cash", label: "Dinheiro" },
-  { value: "card", label: "Cartao" },
-  { value: "transfer", label: "Transferencia" },
+  { value: "card", label: "Cartão" },
+  { value: "transfer", label: "Transferência" },
 ];
 
 function currentMonth() {
@@ -130,6 +131,41 @@ function monthLabel(month) {
   const [year, value] = month.split("-");
   const date = new Date(Number(year), Number(value) - 1, 1);
   return date.toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+}
+
+function shortMonthLabel(month) {
+  const [year, value] = month.split("-");
+  const date = new Date(Number(year), Number(value) - 1, 1);
+  const label = date.toLocaleDateString("pt-BR", { month: "short", year: "2-digit" });
+  return label.replace(".", "");
+}
+
+function monthsAgoStart(count) {
+  const date = new Date();
+  date.setDate(1);
+  date.setMonth(date.getMonth() - (count - 1));
+  return localDate(date);
+}
+
+function buildMonthlyReceived(payments, monthCount = 12) {
+  const buckets = [];
+  const now = new Date();
+  now.setDate(1);
+
+  for (let index = monthCount - 1; index >= 0; index -= 1) {
+    const date = new Date(now.getFullYear(), now.getMonth() - index, 1);
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+    buckets.push({ month: key, label: shortMonthLabel(key), amount: 0 });
+  }
+
+  const byMonth = new Map(buckets.map((item) => [item.month, item]));
+  for (const payment of payments) {
+    const key = monthFromDate(payment.paid_at);
+    const bucket = byMonth.get(key);
+    if (bucket) bucket.amount += Number(payment.amount || 0);
+  }
+
+  return buckets;
 }
 
 function normalizeText(value) {
@@ -209,14 +245,17 @@ function App() {
         ];
 
         if (shouldLoadPayments) {
+          const chartStart = monthsAgoStart(12);
+          const paymentsFrom = reportStart < chartStart ? reportStart : chartStart;
+          const paymentsTo = reportEnd > localDate() ? reportEnd : localDate();
           requests.push(
             supabase
               .from("payments")
               .select(
                 "id, reference_month, paid_at, amount, method, note, registered_by, payer_guardian_id, created_at, payer:guardians(id, full_name, email, phone), registered_by_profile:profiles!payments_registered_by_fkey(id, email, full_name), items:payment_items(id, enrollment_id, amount, enrollment:student_enrollments(id, monthly_value, student:students(id, full_name), modality:modalities(id, name)))",
               )
-              .gte("paid_at", reportStart)
-              .lte("paid_at", reportEnd)
+              .gte("paid_at", paymentsFrom)
+              .lte("paid_at", paymentsTo)
               .order("paid_at", { ascending: false }),
             supabase.from("profiles").select("id, email, full_name, role, created_at").order("full_name"),
           );
@@ -242,12 +281,18 @@ function App() {
           if (result?.error) throw result.error;
         }
 
+        const loadedPayments = paymentsResult?.data || [];
+        const periodPayments = loadedPayments.filter(
+          (payment) => payment.paid_at >= reportStart && payment.paid_at <= reportEnd,
+        );
+
         setData({
           modalities: modalitiesResult.data || [],
           guardians: guardiansResult.data || [],
           enrollments: enrollmentsResult.data || [],
           paymentStatuses: statusesResult.data || [],
-          payments: paymentsResult?.data || [],
+          payments: periodPayments,
+          chartPayments: loadedPayments,
           profiles: profilesResult?.data || [],
         });
       } catch (requestError) {
@@ -318,7 +363,7 @@ function App() {
           student,
           guardian,
           studentName: student.full_name || "Aluno sem nome",
-          guardianName: guardian?.full_name || "Sem responsavel",
+          guardianName: guardian?.full_name || "Sem responsável",
           contact: student.phone || guardian?.phone || "",
           modalityName: enrollment.modality?.name || "Sem modalidade",
           paymentStatus,
@@ -634,7 +679,7 @@ function App() {
     const enrollmentIds = form.getAll("enrollment_ids").map(String);
 
     if (!enrollmentIds.length) {
-      setError("Selecione pelo menos uma matricula para dar baixa.");
+      setError("Selecione pelo menos uma matrícula para dar baixa.");
       return;
     }
 
@@ -714,7 +759,7 @@ function App() {
     if (itemError) {
       setError(
         itemError.code === "23505"
-          ? "Uma das matriculas ja tem pagamento lancado nesse mes."
+          ? "Uma das matrículas já tem pagamento lançado nesse mês."
           : itemError.message,
       );
       return;
@@ -778,11 +823,11 @@ function App() {
     const studentName = enrollment?.studentName || enrollment?.student?.full_name || "este aluno";
 
     if (!studentId) {
-      setError("Aluno invalido para exclusao.");
+      setError("Aluno inválido para exclusão.");
       return;
     }
 
-    if (!window.confirm(`Excluir ${studentName}? Isso remove todas as matriculas desse aluno.`)) return;
+    if (!window.confirm(`Excluir ${studentName}? Isso remove todas as matrículas desse aluno.`)) return;
 
     const { error: deleteError } = await supabase.from("students").delete().eq("id", studentId);
 
@@ -798,7 +843,7 @@ function App() {
       setSelectedEnrollment(null);
     }
 
-    showToast("Aluno excluido.");
+    showToast("Aluno excluído.");
     loadData();
   }
 
@@ -834,17 +879,17 @@ function App() {
         <div className="sidebar-header">
           <span className="brand-mark">{icons.music}</span>
           <div>
-            <strong>Escola de Musica</strong>
+            <strong>Escola de Música</strong>
             <span>Mensalidades</span>
           </div>
         </div>
 
-        <nav className="nav-list" aria-label="Navegacao principal">
+        <nav className="nav-list" aria-label="Navegação principal">
           <NavButton active={view === "payments"} onClick={() => setView("payments")} icon={icons.wallet}>
             Pagamentos
           </NavButton>
           <NavButton active={view === "pending"} onClick={() => setView("pending")} icon={icons.clock}>
-            Pendencias
+            Pendências
           </NavButton>
           <NavButton active={view === "students"} onClick={() => setView("students")} icon={icons.users}>
             Cadastros
@@ -852,17 +897,17 @@ function App() {
           {isAdmin && (
             <>
               <NavButton active={view === "reports"} onClick={() => setView("reports")} icon={icons.chart}>
-                Relatorios
+                Relatórios
               </NavButton>
               <NavButton active={view === "users"} onClick={() => setView("users")} icon={icons.lock}>
-                Usuarios
+                Usuários
               </NavButton>
             </>
           )}
         </nav>
 
         <div className="sidebar-footer">
-          <span className="role-pill">{isAdmin ? "Administrador" : "Funcionario"}</span>
+          <span className="role-pill">{isAdmin ? "Administrador" : "Funcionário"}</span>
           <button className="button ghost full" onClick={handleSignOut}>
             {icons.lock}
             Sair
@@ -875,13 +920,13 @@ function App() {
           <div>
             <h1>{viewTitle(view)}</h1>
             <p>
-              {monthLabel(month)} - {isAdmin ? "visao completa" : "visao operacional"}
+              {monthLabel(month)} — {isAdmin ? "visão completa" : "visão operacional"}
             </p>
           </div>
 
           <div className="topbar-actions">
             <label className="field compact">
-              <span>Mes</span>
+              <span>Mês</span>
               <input
                 type="month"
                 value={month}
@@ -949,6 +994,7 @@ function App() {
             data={data}
             editingEnrollment={editingEnrollment}
             filteredEnrollments={filteredEnrollments}
+            isAdmin={isAdmin}
             modalityFilter={modalityFilter}
             search={search}
             setEditingEnrollment={setEditingEnrollment}
@@ -1007,7 +1053,7 @@ function ConfigurationScreen() {
         <span className="brand-mark dark">{icons.music}</span>
         <h1>Conecte o Supabase</h1>
         <p>
-          Crie um arquivo <code>.env.local</code> com a URL e a chave publica do seu projeto.
+          Crie um arquivo <code>.env.local</code> com a URL e a chave pública do seu projeto.
           Depois rode o SQL de <code>supabase/schema.sql</code> no SQL Editor.
         </p>
         <pre>{`VITE_SUPABASE_URL=https://SEU-PROJETO.supabase.co
@@ -1023,7 +1069,7 @@ function LoadingScreen() {
       <section className="auth-card">
         <span className="brand-mark dark">{icons.music}</span>
         <h1>Carregando</h1>
-        <p>Verificando sessao no Supabase.</p>
+        <p>Verificando sessão no Supabase.</p>
       </section>
     </main>
   );
@@ -1055,7 +1101,7 @@ function AuthScreen() {
       <section className="auth-card">
         <span className="brand-mark dark">{icons.music}</span>
         <h1>Mensalidades</h1>
-        <p>Acesso interno para funcionarios cadastrados no Supabase Auth.</p>
+        <p>Acesso interno para funcionários cadastrados no Supabase Auth.</p>
 
         <form onSubmit={handleAuth} className="auth-form">
           <label className="field">
@@ -1089,14 +1135,15 @@ function PaymentsView(props) {
           <EnrollmentTable
             enrollments={props.filteredEnrollments}
             context="payments"
+            isAdmin={props.isAdmin}
             onSelect={props.setSelectedEnrollment}
           />
         </div>
-        <aside className="panel">
+        <aside className="panel sticky-panel">
           <div className="panel-header">
             <div>
               <h2>Registrar pagamento</h2>
-              <p>Selecione uma pendencia e marque todas as matriculas pagas junto.</p>
+              <p>Selecione uma pendência e marque todas as matrículas pagas junto.</p>
             </div>
           </div>
           <div className="panel-body">
@@ -1106,10 +1153,11 @@ function PaymentsView(props) {
                 enrollment={props.selectedEnrollment}
                 month={props.month}
                 profile={props.profile}
+                onCancel={() => props.setSelectedEnrollment(null)}
                 onSubmit={props.onPayment}
               />
             ) : (
-              <EmptyState title="Nenhum cadastro selecionado" text="Clique em lancar para preencher o pagamento." />
+              <EmptyState title="Nenhum cadastro selecionado" text="Clique em Lançar para preencher o pagamento." />
             )}
           </div>
         </aside>
@@ -1126,23 +1174,32 @@ function PendingView({ isAdmin, month, pendingEnrollments, totals, onSelectEnrol
 
   return (
     <>
-      <section className="metric-grid" aria-label="Resumo de pendencias">
-        <Metric label="Pendentes" value={totals.pendingCount} detail="Ainda sem baixa no mes" icon={icons.clock} />
-        <Metric label="Atrasados" value={totals.lateCount} detail="Vencimento ja passou" icon={icons.wallet} />
+      <section className={`metric-grid ${isAdmin ? "" : "metric-grid-staff"}`.trim()} aria-label="Resumo de pendências">
+        <Metric label="Pendentes" value={totals.pendingCount} detail="Ainda sem baixa no mês" icon={icons.clock} />
+        <Metric label="Atrasados" value={totals.lateCount} detail="Vencimento já passou" icon={icons.wallet} />
         <Metric label="Vencem hoje" value={dueTodayCount} detail="Precisam de acompanhamento" icon={icons.check} />
-        <Metric
-          label={isAdmin ? "Valor em aberto" : "Matriculas ativas"}
-          value={isAdmin ? formatMoney(totals.pendingValue) : totals.activeCount}
-          detail={isAdmin ? "Estimativa das mensalidades" : "Alunos e modalidades"}
-          icon={icons.users}
-        />
+        {isAdmin ? (
+          <Metric
+            label="Valor em aberto"
+            value={formatMoney(totals.pendingValue)}
+            detail="Estimativa das mensalidades"
+            icon={icons.users}
+          />
+        ) : (
+          <Metric
+            label="Matrículas ativas"
+            value={totals.activeCount}
+            detail="Alunos e modalidades"
+            icon={icons.users}
+          />
+        )}
       </section>
 
       <section className="panel">
         <div className="panel-header">
           <div>
-            <h2>Pendencias do mes</h2>
-            <p>Matriculas ativas sem pagamento lancado em {monthLabel(month)}.</p>
+            <h2>Pendências do mês</h2>
+            <p>Matrículas ativas sem pagamento lançado em {monthLabel(month)}.</p>
           </div>
         </div>
         <PendingTable enrollments={pendingEnrollments} isAdmin={isAdmin} onSelectEnrollment={onSelectEnrollment} />
@@ -1153,27 +1210,27 @@ function PendingView({ isAdmin, month, pendingEnrollments, totals, onSelectEnrol
 
 function PendingTable({ enrollments, isAdmin, onSelectEnrollment }) {
   if (!enrollments.length) {
-    return <EmptyState title="Tudo certo por aqui" text="Nao ha pendencias no mes selecionado." />;
+    return <EmptyState title="Tudo certo por aqui" text="Não há pendências no mês selecionado." />;
   }
 
   return (
     <div className="table-wrap">
-      <table>
+      <table className="data-table">
         <thead>
           <tr>
-            <th>Aluno</th>
-            <th>Responsavel</th>
+            <th className="sticky-col">Aluno</th>
+            <th>Responsável</th>
             <th>Modalidade</th>
             <th>Vencimento</th>
             {isAdmin && <th>Valor</th>}
             <th>Status</th>
-            <th>Acao</th>
+            <th>Ação</th>
           </tr>
         </thead>
         <tbody>
           {enrollments.map((enrollment) => (
             <tr key={enrollment.id}>
-              <td>
+              <td className="sticky-col">
                 <StudentCell enrollment={enrollment} />
               </td>
               <td>
@@ -1188,7 +1245,7 @@ function PendingTable({ enrollments, isAdmin, onSelectEnrollment }) {
               <td>
                 <button className="table-action primary" onClick={() => onSelectEnrollment(enrollment)}>
                   {icons.plus}
-                  Lancar
+                  Lançar
                 </button>
               </td>
             </tr>
@@ -1209,19 +1266,20 @@ function StudentsView(props) {
         <EnrollmentTable
           enrollments={props.filteredEnrollments}
           context="students"
+          isAdmin={props.isAdmin}
           onEditEnrollment={props.setEditingEnrollment}
           onEnrollmentStatus={props.onEnrollmentStatus}
           onDeleteStudent={props.onDeleteStudent}
         />
       </div>
-      <aside className="panel">
+      <aside className="panel sticky-panel">
         <div className="panel-header">
           <div>
-            <h2>{isEditing ? "Editar matricula" : "Novo cadastro"}</h2>
+            <h2>{isEditing ? "Editar matrícula" : "Novo cadastro"}</h2>
             <p>
               {isEditing
-                ? "Atualize aluno, responsavel, modalidade, valor e status."
-                : "Cadastre o responsavel, o aluno e uma ou mais modalidades."}
+                ? "Atualize aluno, responsável, modalidade, valor e status."
+                : "Cadastre o responsável, o aluno e uma ou mais modalidades."}
             </p>
           </div>
         </div>
@@ -1256,20 +1314,25 @@ function ReportsView({
   const byModality = groupPaymentItems(data.payments, (item) => item.enrollment?.modality?.name || "Sem modalidade");
   const byMethod = groupPayments(data.payments, (payment) => paymentMethodLabel(payment.method));
   const byDay = groupPayments(data.payments, (payment) => formatDate(payment.paid_at));
+  const monthlyReceived = useMemo(
+    () => buildMonthlyReceived(data.chartPayments || data.payments, 12),
+    [data.chartPayments, data.payments],
+  );
 
   return (
     <>
       <MetricGrid totals={totals} isAdmin />
+      <MonthlyReceivedChart series={monthlyReceived} />
       <section className="panel report-filter">
         <div className="panel-header">
           <div>
-            <h2>Periodo do relatorio</h2>
-            <p>Filtre por data de recebimento e exporte o historico.</p>
+            <h2>Período do relatório</h2>
+            <p>Filtre por data de recebimento e exporte o histórico.</p>
           </div>
         </div>
         <div className="panel-body report-controls">
           <label className="field">
-            <span>Inicio</span>
+            <span>Início</span>
             <input type="date" value={reportStart} onChange={(event) => onReportStart(event.target.value)} />
           </label>
           <label className="field">
@@ -1293,28 +1356,28 @@ function ReportsView({
       <section className="panel">
         <div className="panel-header">
           <div>
-            <h2>Historico do periodo</h2>
-            <p>Veja o responsavel, os alunos pagos juntos e quem lancou a baixa.</p>
+            <h2>Histórico do período</h2>
+            <p>Veja o responsável, os alunos pagos juntos e quem lançou a baixa.</p>
           </div>
         </div>
         <div className="table-wrap">
-          <table>
+          <table className="data-table">
             <thead>
               <tr>
-                <th>Data</th>
-                <th>Responsavel</th>
+                <th className="sticky-col">Data</th>
+                <th>Responsável</th>
                 <th>Alunos e modalidades</th>
                 <th>Forma</th>
                 <th>Valor</th>
-                <th>Lancado por</th>
-                <th>Acao</th>
+                <th>Lançado por</th>
+                <th>Ação</th>
               </tr>
             </thead>
             <tbody>
               {data.payments.length ? (
                 data.payments.map((payment) => (
                   <tr key={payment.id}>
-                    <td>{formatDate(payment.paid_at)}</td>
+                    <td className="sticky-col">{formatDate(payment.paid_at)}</td>
                     <td>{paymentPayerLabel(payment)}</td>
                     <td className="report-items">{paymentItemsLabel(payment)}</td>
                     <td>{paymentMethodLabel(payment.method)}</td>
@@ -1338,7 +1401,7 @@ function ReportsView({
               ) : (
                 <tr>
                   <td colSpan="7" className="muted">
-                    Nenhum pagamento registrado no periodo.
+                    Nenhum pagamento registrado no período.
                   </td>
                 </tr>
               )}
@@ -1351,7 +1414,7 @@ function ReportsView({
           <div className="panel-header">
             <div>
               <h2>Corrigir pagamento</h2>
-              <p>Altere mes, data, valor, forma ou observacao da baixa conjunta.</p>
+              <p>Altere mês, data, valor, forma ou observação da baixa conjunta.</p>
             </div>
           </div>
           <div className="panel-body">
@@ -1368,18 +1431,18 @@ function UsersView({ currentUserId, profiles, onUpdateProfile }) {
     <section className="panel">
       <div className="panel-header">
         <div>
-          <h2>Usuarios e permissoes</h2>
-          <p>Defina quem e administrador e quem e funcionario.</p>
+          <h2>Usuários e permissões</h2>
+          <p>Defina quem é administrador e quem é funcionário.</p>
         </div>
       </div>
       <div className="table-wrap">
-        <table>
+        <table className="data-table">
           <thead>
             <tr>
-              <th>Nome</th>
+              <th className="sticky-col">Nome</th>
               <th>Email</th>
               <th>Perfil</th>
-              <th>Acao</th>
+              <th>Ação</th>
             </tr>
           </thead>
           <tbody>
@@ -1387,10 +1450,10 @@ function UsersView({ currentUserId, profiles, onUpdateProfile }) {
               <tr key={user.id}>
                 <td colSpan="4">
                   <form className="user-row" onSubmit={(event) => onUpdateProfile(event, user.id)}>
-                    <input name="full_name" defaultValue={user.full_name} placeholder="Nome do usuario" />
+                    <input name="full_name" defaultValue={user.full_name} placeholder="Nome do usuário" />
                     <span>{user.email || user.id}</span>
                     <select name="role" defaultValue={user.role} disabled={user.id === currentUserId}>
-                      <option value="staff">Funcionario</option>
+                      <option value="staff">Funcionário</option>
                       <option value="admin">Administrador</option>
                     </select>
                     <button className="table-action primary" disabled={user.id === currentUserId}>
@@ -1420,8 +1483,8 @@ function EnrollmentFilters({
     <section className="panel filter-panel">
       <div className="panel-header">
         <div>
-          <h2>Cadastros e situacao</h2>
-          <p>Filtre por aluno, responsavel, email, telefone, modalidade ou status.</p>
+          <h2>Cadastros e situação</h2>
+          <p>Filtre por aluno, responsável, email, telefone, modalidade ou status.</p>
         </div>
       </div>
       <div className="panel-body search-box">
@@ -1429,7 +1492,7 @@ function EnrollmentFilters({
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           type="search"
-          placeholder="Buscar aluno, responsavel, email ou modalidade"
+          placeholder="Buscar aluno, responsável, email ou modalidade"
         />
         <select value={modalityFilter} onChange={(event) => setModalityFilter(event.target.value)}>
           <option value="all">Todas as modalidades</option>
@@ -1454,6 +1517,7 @@ function EnrollmentFilters({
 function EnrollmentTable({
   enrollments,
   context,
+  isAdmin = false,
   onDeleteStudent,
   onEditEnrollment,
   onSelect,
@@ -1463,19 +1527,22 @@ function EnrollmentTable({
     return <EmptyState title="Nenhum cadastro encontrado" text="Altere os filtros ou cadastre um novo aluno." />;
   }
 
+  // Staff: hide money overview on payments/pending tables; Cadastros still shows values for editing.
+  const showMensalidade = isAdmin || context === "students";
+
   return (
     <section className="panel">
       <div className="table-wrap">
-        <table>
+        <table className="data-table">
           <thead>
             <tr>
-              <th>Aluno</th>
-              <th>Responsavel</th>
+              <th className="sticky-col">Aluno</th>
+              <th>Responsável</th>
               <th>Modalidade</th>
               <th>Vencimento</th>
-              <th>Mensalidade</th>
+              {showMensalidade && <th>Mensalidade</th>}
               <th>Status</th>
-              <th>Acao</th>
+              <th>Ação</th>
             </tr>
           </thead>
           <tbody>
@@ -1484,7 +1551,7 @@ function EnrollmentTable({
 
               return (
                 <tr key={enrollment.id}>
-                  <td>
+                  <td className="sticky-col">
                     <StudentCell enrollment={enrollment} />
                   </td>
                   <td>
@@ -1492,7 +1559,7 @@ function EnrollmentTable({
                   </td>
                   <td>{enrollment.modalityName}</td>
                   <td>Dia {enrollment.due_day}</td>
-                  <td>{formatMoney(enrollment.monthly_value)}</td>
+                  {showMensalidade && <td>{formatMoney(enrollment.monthly_value)}</td>}
                   <td>
                     <span className={`badge ${enrollment.paymentStatusClass}`}>{enrollment.paymentStatusLabel}</span>
                   </td>
@@ -1501,13 +1568,13 @@ function EnrollmentTable({
                       canPay ? (
                         <button className="table-action primary" onClick={() => onSelect(enrollment)}>
                           {icons.plus}
-                          Lancar
+                          Lançar
                         </button>
                       ) : (
                         <span className="muted">
                           {enrollment.paymentStatus?.paid_at
                             ? `Pago em ${formatDate(enrollment.paymentStatus.paid_at)}`
-                            : "Sem acao"}
+                            : "Sem ação"}
                         </span>
                       )
                     ) : (
@@ -1521,10 +1588,12 @@ function EnrollmentTable({
                         <button className="table-action secondary" onClick={() => onEnrollmentStatus(enrollment)}>
                           {enrollment.status === "active" ? "Pausar" : "Ativar"}
                         </button>
-                        <button className="table-action danger" onClick={() => onDeleteStudent(enrollment)}>
-                          {icons.trash}
-                          Excluir aluno
-                        </button>
+                        {isAdmin && (
+                          <button className="table-action danger" onClick={() => onDeleteStudent(enrollment)}>
+                            {icons.trash}
+                            Excluir aluno
+                          </button>
+                        )}
                       </span>
                     )}
                   </td>
@@ -1543,19 +1612,19 @@ function MetricGrid({ totals, isAdmin }) {
     return (
       <section className="metric-grid" aria-label="Resumo financeiro">
         <Metric label="Recebido hoje" value={formatMoney(totals.receivedToday)} detail="Pagamentos de hoje" icon={icons.wallet} />
-        <Metric label="Recebido no periodo" value={formatMoney(totals.receivedPeriod)} detail={`${totals.paymentCount} pagamentos`} icon={icons.chart} />
-        <Metric label="Pendencia estimada" value={formatMoney(totals.pendingValue)} detail="Matriculas nao pagas" icon={icons.clock} />
-        <Metric label="Matriculas ativas" value={totals.activeCount} detail={`${totals.lateCount} atrasadas`} icon={icons.users} />
+        <Metric label="Recebido no período" value={formatMoney(totals.receivedPeriod)} detail={`${totals.paymentCount} pagamentos`} icon={icons.chart} />
+        <Metric label="Pendência estimada" value={formatMoney(totals.pendingValue)} detail="Matrículas não pagas" icon={icons.clock} />
+        <Metric label="Matrículas ativas" value={totals.activeCount} detail={`${totals.lateCount} atrasadas`} icon={icons.users} />
       </section>
     );
   }
 
   return (
-    <section className="metric-grid" aria-label="Resumo operacional">
-      <Metric label="Pagas" value={totals.paidCount} detail="No mes selecionado" icon={icons.check} />
+    <section className="metric-grid metric-grid-staff" aria-label="Resumo operacional">
+      <Metric label="Pagas" value={totals.paidCount} detail="No mês selecionado" icon={icons.check} />
       <Metric label="Pendentes" value={totals.pendingCount} detail="Ainda precisam de baixa" icon={icons.clock} />
-      <Metric label="Atrasadas" value={totals.lateCount} detail="Vencimento ja passou" icon={icons.wallet} />
-      <Metric label="Matriculas ativas" value={totals.activeCount} detail="Alunos e modalidades" icon={icons.users} />
+      <Metric label="Atrasadas" value={totals.lateCount} detail="Vencimento já passou" icon={icons.wallet} />
+      <Metric label="Matrículas ativas" value={totals.activeCount} detail="Alunos e modalidades" icon={icons.users} />
     </section>
   );
 }
@@ -1573,7 +1642,7 @@ function Metric({ label, value, detail, icon }) {
   );
 }
 
-function PaymentForm({ availableEnrollments, enrollment, month, onSubmit, profile }) {
+function PaymentForm({ availableEnrollments, enrollment, month, onCancel, onSubmit, profile }) {
   const optionKey = availableEnrollments.map((item) => item.id).join("|");
   const [selectedIds, setSelectedIds] = useState([]);
   const selectedEnrollments = availableEnrollments.filter((item) => selectedIds.includes(item.id));
@@ -1600,8 +1669,8 @@ function PaymentForm({ availableEnrollments, enrollment, month, onSubmit, profil
     <form onSubmit={onSubmit}>
       <div className="selected-student">
         <strong>{enrollment.guardian?.full_name || enrollment.studentName}</strong>
-        <span>{enrollment.guardian?.email || enrollment.contact || "Responsavel sem contato"}</span>
-        <small>Lancado por {profileLabel(profile)}</small>
+        <span>{enrollment.guardian?.email || enrollment.contact || "Responsável sem contato"}</span>
+        <small>Lançado por {profileLabel(profile)}</small>
       </div>
 
       <div className="payment-options">
@@ -1656,19 +1725,24 @@ function PaymentForm({ availableEnrollments, enrollment, month, onSubmit, profil
           </select>
         </label>
         <label className="field wide">
-          <span>Observacao</span>
+          <span>Observação</span>
           <textarea name="note" placeholder="Desconto, pagamento parcial, bolsa..." />
         </label>
       </div>
 
       <div className="payment-summary">
-        <span>{selectedEnrollments.length} matricula(s) selecionada(s)</span>
+        <span>{selectedEnrollments.length} matrícula(s) selecionada(s)</span>
         <strong>{formatMoney(amount)}</strong>
       </div>
 
-      <button className="button primary full form-actions" disabled={!selectedIds.length}>
-        {icons.check} Confirmar baixa
-      </button>
+      <div className="button-row form-actions payment-form-actions">
+        <button className="button primary" disabled={!selectedIds.length}>
+          {icons.check} Confirmar baixa
+        </button>
+        <button className="button secondary cancel-button" type="button" onClick={onCancel}>
+          Cancelar
+        </button>
+      </div>
     </form>
   );
 }
@@ -1679,7 +1753,7 @@ function PaymentEditForm({ onCancel, onSubmit, payment }) {
       <div className="selected-student">
         <strong>{paymentPayerLabel(payment)}</strong>
         <span>{paymentItemsLabel(payment)}</span>
-        <small>Lancado por {profileLabel(payment.registered_by_profile)}</small>
+        <small>Lançado por {profileLabel(payment.registered_by_profile)}</small>
       </div>
 
       <div className="form-grid">
@@ -1706,13 +1780,13 @@ function PaymentEditForm({ onCancel, onSubmit, payment }) {
           </select>
         </label>
         <label className="field wide">
-          <span>Observacao</span>
+          <span>Observação</span>
           <textarea name="note" defaultValue={payment.note || ""} />
         </label>
       </div>
       <div className="button-row form-actions">
-        <button className="button primary">Salvar correcao</button>
-        <button className="button secondary" type="button" onClick={onCancel}>
+        <button className="button primary">Salvar correção</button>
+        <button className="button secondary cancel-button" type="button" onClick={onCancel}>
           Cancelar
         </button>
       </div>
@@ -1737,15 +1811,15 @@ function EnrollmentForm({ modalities, onCancel, onSubmit, enrollment }) {
           <input name="phone" placeholder="(00) 00000-0000" defaultValue={student?.phone || ""} />
         </label>
         <label className="field">
-          <span>Responsavel</span>
-          <input name="guardian_name" placeholder="Nome do responsavel" defaultValue={guardian?.full_name || ""} />
+          <span>Responsável</span>
+          <input name="guardian_name" placeholder="Nome do responsável" defaultValue={guardian?.full_name || ""} />
         </label>
         <label className="field">
           <span>Email do responsavel</span>
           <input name="guardian_email" type="email" placeholder="responsavel@email.com" defaultValue={guardian?.email || ""} />
         </label>
         <label className="field">
-          <span>Telefone responsavel</span>
+          <span>Telefone responsável</span>
           <input name="guardian_phone" placeholder="(00) 00000-0000" defaultValue={guardian?.phone || ""} />
         </label>
 
@@ -1810,19 +1884,79 @@ function EnrollmentForm({ modalities, onCancel, onSubmit, enrollment }) {
           </label>
         )}
         <label className="field wide">
-          <span>Observacoes</span>
-          <textarea name="notes" placeholder="Horario, desconto, observacoes..." defaultValue={enrollment?.notes || ""} />
+          <span>Observações</span>
+          <textarea name="notes" placeholder="Horário, desconto, observações..." defaultValue={enrollment?.notes || ""} />
         </label>
       </div>
       <div className="button-row form-actions">
-        <button className="button primary">{isEditing ? "Salvar alteracoes" : "Cadastrar"}</button>
+        <button className="button primary">{isEditing ? "Salvar alterações" : "Cadastrar"}</button>
         {isEditing && (
-          <button className="button secondary" type="button" onClick={onCancel}>
+          <button className="button secondary cancel-button" type="button" onClick={onCancel}>
             Cancelar
           </button>
         )}
       </div>
     </form>
+  );
+}
+
+function MonthlyReceivedChart({ series }) {
+  const max = Math.max(1, ...series.map((item) => item.amount));
+  const chartHeight = 160;
+  const barGap = 8;
+  const barWidth = series.length ? Math.max(18, Math.floor((560 - barGap * (series.length - 1)) / series.length)) : 24;
+  const width = series.length * barWidth + Math.max(0, series.length - 1) * barGap;
+  const total = series.reduce((sum, item) => sum + item.amount, 0);
+
+  return (
+    <section className="panel monthly-chart-panel">
+      <div className="panel-header">
+        <div>
+          <h2>Recebido por mês</h2>
+          <p>Últimos 12 meses · total {formatMoney(total)}</p>
+        </div>
+      </div>
+      <div className="panel-body monthly-chart-body">
+        <div className="monthly-chart-scroll">
+          <svg
+            className="monthly-chart"
+            viewBox={`0 0 ${Math.max(width, 320)} ${chartHeight + 36}`}
+            role="img"
+            aria-label="Gráfico de valores recebidos por mês"
+          >
+            {series.map((item, index) => {
+              const barHeight = Math.max(item.amount > 0 ? 4 : 0, (item.amount / max) * chartHeight);
+              const x = index * (barWidth + barGap);
+              const y = chartHeight - barHeight;
+              return (
+                <g key={item.month}>
+                  <title>{`${item.label}: ${formatMoney(item.amount)}`}</title>
+                  <rect
+                    className="monthly-bar"
+                    x={x}
+                    y={y}
+                    width={barWidth}
+                    height={barHeight}
+                    rx="6"
+                  />
+                  <text className="monthly-label" x={x + barWidth / 2} y={chartHeight + 18} textAnchor="middle">
+                    {item.label}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+        <div className="monthly-legend">
+          {series.map((item) => (
+            <div className="monthly-legend-item" key={`legend-${item.month}`}>
+              <strong>{item.label}</strong>
+              <span>{formatMoney(item.amount)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -1835,7 +1969,7 @@ function ChartPanel({ title, values }) {
       <div className="panel-header">
         <div>
           <h2>{title}</h2>
-          <p>{entries.length ? "Valores do periodo selecionado." : "Sem pagamentos no periodo."}</p>
+          <p>{entries.length ? "Valores do período selecionado." : "Sem pagamentos no período."}</p>
         </div>
       </div>
       <div className="panel-body">
@@ -1852,7 +1986,7 @@ function ChartPanel({ title, values }) {
             ))}
           </div>
         ) : (
-          <EmptyState title="Sem dados" text="Os graficos aparecem depois dos lancamentos." />
+          <EmptyState title="Sem dados" text="Os gráficos aparecem depois dos lançamentos." />
         )}
       </div>
     </section>
@@ -1899,7 +2033,7 @@ function GuardianCell({ enrollment }) {
 function StaffCell({ profile }) {
   return (
     <span className="student-cell staff-cell">
-      <strong>{profile?.full_name || "Funcionario"}</strong>
+      <strong>{profile?.full_name || "Funcionário"}</strong>
       <span>{profile?.email || "-"}</span>
     </span>
   );
@@ -1962,15 +2096,15 @@ function paymentMethodLabel(value) {
 }
 
 function profileLabel(profile) {
-  if (!profile) return "Funcionario";
+  if (!profile) return "Funcionário";
   if (profile.full_name && profile.email) return `${profile.full_name} (${profile.email})`;
-  return profile.full_name || profile.email || "Funcionario";
+  return profile.full_name || profile.email || "Funcionário";
 }
 
 function paymentPayerLabel(payment) {
   if (payment.payer?.full_name) return payment.payer.full_name;
   const firstItem = payment.items?.[0];
-  return firstItem?.enrollment?.student?.full_name || "Responsavel nao informado";
+  return firstItem?.enrollment?.student?.full_name || "Responsável não informado";
 }
 
 function paymentItemsLabel(payment) {
@@ -2018,7 +2152,7 @@ function allocatePaymentItems(total, enrollments) {
 
 function exportPaymentsCsv(payments, start, end) {
   const rows = [
-    ["Data", "Responsavel", "Alunos e modalidades", "Forma", "Valor", "Lancado por", "Observacao"],
+    ["Data", "Responsável", "Alunos e modalidades", "Forma", "Valor", "Lançado por", "Observação"],
     ...payments.map((payment) => [
       formatDate(payment.paid_at),
       paymentPayerLabel(payment),
@@ -2045,10 +2179,10 @@ function exportPaymentsCsv(payments, start, end) {
 
 function viewTitle(view) {
   if (view === "students") return "Cadastro de alunos";
-  if (view === "reports") return "Relatorios financeiros";
-  if (view === "pending") return "Pendencias";
-  if (view === "users") return "Usuarios";
-  return "Pagamentos do mes";
+  if (view === "reports") return "Relatórios financeiros";
+  if (view === "pending") return "Pendências";
+  if (view === "users") return "Usuários";
+  return "Pagamentos do mês";
 }
 
 export default App;
