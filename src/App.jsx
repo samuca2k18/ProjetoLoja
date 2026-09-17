@@ -136,8 +136,8 @@ function monthLabel(month) {
 function shortMonthLabel(month) {
   const [year, value] = month.split("-");
   const date = new Date(Number(year), Number(value) - 1, 1);
-  const label = date.toLocaleDateString("pt-BR", { month: "short", year: "2-digit" });
-  return label.replace(".", "");
+  const label = date.toLocaleDateString("pt-BR", { month: "short" });
+  return label.replace(".", "").trim();
 }
 
 function monthsAgoStart(count) {
@@ -1473,8 +1473,8 @@ function ReportsView({
             <p>Veja o responsável, os alunos pagos juntos e quem lançou a baixa.</p>
           </div>
         </div>
-        <div className="table-wrap">
-          <table className="data-table">
+        <div className="table-wrap history-table-wrap">
+          <table className="data-table history-table">
             <thead>
               <tr>
                 <th className="sticky-col">Data</th>
@@ -1483,7 +1483,7 @@ function ReportsView({
                 <th>Forma</th>
                 <th>Valor</th>
                 <th>Lançado por</th>
-                <th>Ação</th>
+                <th className="actions-col">Ação</th>
               </tr>
             </thead>
             <tbody>
@@ -1498,7 +1498,7 @@ function ReportsView({
                     <td>
                       <StaffCell profile={payment.registered_by_profile} />
                     </td>
-                    <td>
+                    <td className="actions-col">
                       <span className="table-actions">
                         <button className="table-action secondary" onClick={() => onEditPayment(payment)}>
                           Editar
@@ -2042,9 +2042,9 @@ function MonthlyReceivedChart({ series, methods = [] }) {
   const max = Math.max(1, ...series.map((item) => item.amount));
   const chartHeight = 148;
   const topPad = 28;
-  const bottomPad = 28;
-  const leftPad = 8;
-  const rightPad = 8;
+  const bottomPad = 52;
+  const leftPad = 12;
+  const rightPad = 16;
   const barGap = 10;
   const innerWidth = 640;
   const barWidth = series.length
@@ -2056,6 +2056,7 @@ function MonthlyReceivedChart({ series, methods = [] }) {
   const total = series.reduce((sum, item) => sum + item.amount, 0);
   const methodTotalCount = methods.reduce((sum, item) => sum + item.count, 0);
   const methodMax = Math.max(1, ...methods.map((item) => item.amount));
+  const labelStep = series.length > 8 ? 2 : 1;
 
   return (
     <section className="panel monthly-chart-panel">
@@ -2085,9 +2086,10 @@ function MonthlyReceivedChart({ series, methods = [] }) {
             />
             {series.map((item, index) => {
               const rawHeight = (item.amount / max) * chartHeight;
-              const barHeight = item.amount > 0 ? Math.max(8, rawHeight) : 0;
+              const barHeight = item.amount > 0 ? Math.max(8, rawHeight) : 2;
               const x = leftPad + index * (barWidth + barGap);
               const y = topPad + chartHeight - barHeight;
+              const showLabel = index % labelStep === 0 || index === series.length - 1;
               return (
                 <g key={item.month}>
                   <title>{`${item.label}: ${formatMoney(item.amount)}`}</title>
@@ -2099,22 +2101,30 @@ function MonthlyReceivedChart({ series, methods = [] }) {
                     height={chartHeight}
                     rx="8"
                   />
+                  <rect
+                    className={item.amount > 0 ? "monthly-bar" : "monthly-bar monthly-bar-stub"}
+                    x={x}
+                    y={y}
+                    width={barWidth}
+                    height={barHeight}
+                    rx={item.amount > 0 ? "8" : "2"}
+                  />
                   {item.amount > 0 && (
-                    <>
-                      <rect className="monthly-bar" x={x} y={y} width={barWidth} height={barHeight} rx="8" />
-                      <text className="monthly-value" x={x + barWidth / 2} y={y - 8} textAnchor="middle">
-                        {formatCompactMoney(item.amount)}
-                      </text>
-                    </>
+                    <text className="monthly-value" x={x + barWidth / 2} y={y - 8} textAnchor="middle">
+                      {formatCompactMoney(item.amount)}
+                    </text>
                   )}
-                  <text
-                    className="monthly-label"
-                    x={x + barWidth / 2}
-                    y={topPad + chartHeight + 18}
-                    textAnchor="middle"
-                  >
-                    {item.label}
-                  </text>
+                  {showLabel && (
+                    <text
+                      className="monthly-label"
+                      x={x + barWidth / 2}
+                      y={topPad + chartHeight + 14}
+                      textAnchor="end"
+                      transform={`rotate(-35 ${x + barWidth / 2} ${topPad + chartHeight + 14})`}
+                    >
+                      {item.label}
+                    </text>
+                  )}
                 </g>
               );
             })}
