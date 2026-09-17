@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isSupabaseConfigured, supabase } from "./lib/supabase";
 
 const emptyData = {
@@ -186,6 +186,8 @@ function App() {
   const [modalityFilter, setModalityFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [selectedEnrollment, setSelectedEnrollment] = useState(null);
+  const [paymentOrigin, setPaymentOrigin] = useState(null); // null | "pending"
+  const paymentPanelRef = useRef(null);
   const [editingEnrollment, setEditingEnrollment] = useState(null);
   const [editingPayment, setEditingPayment] = useState(null);
   const [reportStart, setReportStart] = useState(startOfMonth(currentMonth()));
@@ -707,6 +709,7 @@ function App() {
 
     setMonth(nextMonth);
     setSelectedEnrollment(null);
+    setPaymentOrigin(null);
     showToast("Pagamento registrado.");
     if (nextMonth === month) {
       loadData();
@@ -841,6 +844,7 @@ function App() {
     }
     if (selectedEnrollment?.student?.id === studentId) {
       setSelectedEnrollment(null);
+      setPaymentOrigin(null);
     }
 
     showToast("Aluno excluído.");
@@ -936,6 +940,7 @@ function App() {
                   setReportStart(startOfMonth(nextMonth));
                   setReportEnd(endOfMonth(nextMonth));
                   setSelectedEnrollment(null);
+                  setPaymentOrigin(null);
                 }}
               />
             </label>
@@ -962,11 +967,22 @@ function App() {
             isAdmin={isAdmin}
             month={month}
             paymentOptions={paymentOptions}
+            paymentOrigin={paymentOrigin}
+            paymentPanelRef={paymentPanelRef}
             profile={profile}
             selectedEnrollment={selectedEnrollment}
             setModalityFilter={setModalityFilter}
             setSearch={setSearch}
-            setSelectedEnrollment={setSelectedEnrollment}
+            setSelectedEnrollment={(enrollment) => {
+              setSelectedEnrollment(enrollment);
+              setPaymentOrigin(null);
+            }}
+            clearPaymentSelection={({ goBack } = {}) => {
+              const fromPending = paymentOrigin === "pending";
+              setSelectedEnrollment(null);
+              setPaymentOrigin(null);
+              if (goBack || fromPending) setView("pending");
+            }}
             setStatusFilter={setStatusFilter}
             modalityFilter={modalityFilter}
             search={search}
@@ -984,6 +1000,7 @@ function App() {
             totals={totals}
             onSelectEnrollment={(enrollment) => {
               setSelectedEnrollment(enrollment);
+              setPaymentOrigin("pending");
               setView("payments");
             }}
           />
@@ -1126,9 +1143,42 @@ function AuthScreen() {
 }
 
 function PaymentsView(props) {
+  const fromPending = props.paymentOrigin === "pending" && props.selectedEnrollment;
+  const studentLabel =
+    props.selectedEnrollment?.studentName ||
+    props.selectedEnrollment?.student?.full_name ||
+    "aluno";
+
+  useEffect(() => {
+    if (!props.selectedEnrollment || !props.paymentPanelRef?.current) return;
+    if (props.paymentOrigin !== "pending") return;
+    const panel = props.paymentPanelRef.current;
+    const timer = window.setTimeout(() => {
+      panel.scrollIntoView({ behavior: "smooth", block: "start" });
+      const focusable = panel.querySelector("input, select, textarea, button");
+      if (focusable) focusable.focus({ preventScroll: true });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [props.selectedEnrollment?.id, props.paymentOrigin, props.paymentPanelRef]);
+
   return (
     <>
       <MetricGrid totals={props.totals} isAdmin={props.isAdmin} />
+      {fromPending && (
+        <div className="context-banner" role="status">
+          <div>
+            <strong>Baixa de {studentLabel}</strong>
+            <span>Vindo de Pendências — confirme o pagamento abaixo.</span>
+          </div>
+          <button
+            type="button"
+            className="button secondary"
+            onClick={() => props.clearPaymentSelection({ goBack: true })}
+          >
+            Cancelar
+          </button>
+        </div>
+      )}
       <section className="split-grid">
         <div>
           <EnrollmentFilters {...props} />
@@ -1139,11 +1189,15 @@ function PaymentsView(props) {
             onSelect={props.setSelectedEnrollment}
           />
         </div>
-        <aside className="panel sticky-panel">
+        <aside className="panel sticky-panel" ref={props.paymentPanelRef}>
           <div className="panel-header">
             <div>
-              <h2>Registrar pagamento</h2>
-              <p>Selecione uma pendência e marque todas as matrículas pagas junto.</p>
+              <h2>{fromPending ? "Dar baixa" : "Registrar pagamento"}</h2>
+              <p>
+                {fromPending
+                  ? `Baixa de ${studentLabel} — marque as matrículas e confirme.`
+                  : "Selecione uma pendência e marque todas as matrículas pagas junto."}
+              </p>
             </div>
           </div>
           <div className="panel-body">
@@ -1153,11 +1207,14 @@ function PaymentsView(props) {
                 enrollment={props.selectedEnrollment}
                 month={props.month}
                 profile={props.profile}
-                onCancel={() => props.setSelectedEnrollment(null)}
+                onCancel={() => props.clearPaymentSelection()}
                 onSubmit={props.onPayment}
               />
             ) : (
-              <EmptyState title="Nenhum cadastro selecionado" text="Clique em Lançar para preencher o pagamento." />
+              <EmptyState
+                title="Nenhum cadastro selecionado"
+                text="Clique em Dar baixa para preencher o pagamento."
+              />
             )}
           </div>
         </aside>
@@ -1214,45 +1271,71 @@ function PendingTable({ enrollments, isAdmin, onSelectEnrollment }) {
   }
 
   return (
-    <div className="table-wrap">
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th className="sticky-col">Aluno</th>
-            <th>Responsável</th>
-            <th>Modalidade</th>
-            <th>Vencimento</th>
-            {isAdmin && <th>Valor</th>}
-            <th>Status</th>
-            <th>Ação</th>
-          </tr>
-        </thead>
-        <tbody>
-          {enrollments.map((enrollment) => (
-            <tr key={enrollment.id}>
-              <td className="sticky-col">
-                <StudentCell enrollment={enrollment} />
-              </td>
-              <td>
-                <GuardianCell enrollment={enrollment} />
-              </td>
-              <td>{enrollment.modalityName}</td>
-              <td>Dia {enrollment.due_day}</td>
-              {isAdmin && <td>{formatMoney(enrollment.monthly_value)}</td>}
-              <td>
-                <span className={`badge ${enrollment.paymentStatusClass}`}>{enrollment.paymentStatusLabel}</span>
-              </td>
-              <td>
-                <button className="table-action primary" onClick={() => onSelectEnrollment(enrollment)}>
-                  {icons.plus}
-                  Lançar
-                </button>
-              </td>
+    <>
+      <div className="table-wrap desktop-only">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th className="sticky-col">Aluno</th>
+              <th>Responsável</th>
+              <th>Modalidade</th>
+              <th>Vencimento</th>
+              {isAdmin && <th>Valor</th>}
+              <th>Status</th>
+              <th>Ação</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {enrollments.map((enrollment) => (
+              <tr key={enrollment.id}>
+                <td className="sticky-col">
+                  <StudentCell enrollment={enrollment} />
+                </td>
+                <td>
+                  <GuardianCell enrollment={enrollment} />
+                </td>
+                <td>{enrollment.modalityName}</td>
+                <td>Dia {enrollment.due_day}</td>
+                {isAdmin && <td>{formatMoney(enrollment.monthly_value)}</td>}
+                <td>
+                  <span className={`badge ${enrollment.paymentStatusClass}`}>{enrollment.paymentStatusLabel}</span>
+                </td>
+                <td>
+                  <button className="table-action primary" onClick={() => onSelectEnrollment(enrollment)}>
+                    {icons.check}
+                    Dar baixa
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="list-cards mobile-only" aria-label="Pendências em cartões">
+        {enrollments.map((enrollment) => (
+          <article className="list-card" key={enrollment.id}>
+            <div className="list-card-head">
+              <div>
+                <strong>{enrollment.studentName}</strong>
+                <span className="list-card-meta">{enrollment.modalityName}</span>
+              </div>
+              <span className={`badge ${enrollment.paymentStatusClass}`}>{enrollment.paymentStatusLabel}</span>
+            </div>
+            <div className="list-card-body">
+              <span>Resp.: {enrollment.guardianName}</span>
+              <span>Vence dia {enrollment.due_day}</span>
+              {isAdmin && <span>{formatMoney(enrollment.monthly_value)}</span>}
+            </div>
+            <div className="list-card-actions">
+              <button className="table-action primary" onClick={() => onSelectEnrollment(enrollment)}>
+                {icons.check}
+                Dar baixa
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -1530,9 +1613,51 @@ function EnrollmentTable({
   // Staff: hide money overview on payments/pending tables; Cadastros still shows values for editing.
   const showMensalidade = isAdmin || context === "students";
 
+  function renderActions(enrollment) {
+    const canPay = enrollment.paymentStatusKey === "pending" || enrollment.paymentStatusKey === "late";
+
+    if (context === "payments") {
+      if (canPay) {
+        return (
+          <button className="table-action primary" onClick={() => onSelect(enrollment)}>
+            {icons.check}
+            Dar baixa
+          </button>
+        );
+      }
+      return (
+        <span className="muted">
+          {enrollment.paymentStatus?.paid_at
+            ? `Pago em ${formatDate(enrollment.paymentStatus.paid_at)}`
+            : "Sem ação"}
+        </span>
+      );
+    }
+
+    return (
+      <span className="table-actions">
+        <button
+          className="table-action secondary"
+          onClick={() => onEditEnrollment(enrollment.primaryEnrollment || enrollment)}
+        >
+          Editar
+        </button>
+        <button className="table-action secondary" onClick={() => onEnrollmentStatus(enrollment)}>
+          {enrollment.status === "active" ? "Pausar" : "Ativar"}
+        </button>
+        {isAdmin && (
+          <button className="table-action danger" onClick={() => onDeleteStudent(enrollment)}>
+            {icons.trash}
+            Excluir aluno
+          </button>
+        )}
+      </span>
+    );
+  }
+
   return (
     <section className="panel">
-      <div className="table-wrap">
+      <div className="table-wrap desktop-only">
         <table className="data-table">
           <thead>
             <tr>
@@ -1546,66 +1671,49 @@ function EnrollmentTable({
             </tr>
           </thead>
           <tbody>
-            {enrollments.map((enrollment) => {
-              const canPay = enrollment.paymentStatusKey === "pending" || enrollment.paymentStatusKey === "late";
-
-              return (
-                <tr key={enrollment.id}>
-                  <td className="sticky-col">
-                    <StudentCell enrollment={enrollment} />
-                  </td>
-                  <td>
-                    <GuardianCell enrollment={enrollment} />
-                  </td>
-                  <td>{enrollment.modalityName}</td>
-                  <td>Dia {enrollment.due_day}</td>
-                  {showMensalidade && <td>{formatMoney(enrollment.monthly_value)}</td>}
-                  <td>
-                    <span className={`badge ${enrollment.paymentStatusClass}`}>{enrollment.paymentStatusLabel}</span>
-                  </td>
-                  <td>
-                    {context === "payments" ? (
-                      canPay ? (
-                        <button className="table-action primary" onClick={() => onSelect(enrollment)}>
-                          {icons.plus}
-                          Lançar
-                        </button>
-                      ) : (
-                        <span className="muted">
-                          {enrollment.paymentStatus?.paid_at
-                            ? `Pago em ${formatDate(enrollment.paymentStatus.paid_at)}`
-                            : "Sem ação"}
-                        </span>
-                      )
-                    ) : (
-                      <span className="table-actions">
-                        <button
-                          className="table-action secondary"
-                          onClick={() => onEditEnrollment(enrollment.primaryEnrollment || enrollment)}
-                        >
-                          Editar
-                        </button>
-                        <button className="table-action secondary" onClick={() => onEnrollmentStatus(enrollment)}>
-                          {enrollment.status === "active" ? "Pausar" : "Ativar"}
-                        </button>
-                        {isAdmin && (
-                          <button className="table-action danger" onClick={() => onDeleteStudent(enrollment)}>
-                            {icons.trash}
-                            Excluir aluno
-                          </button>
-                        )}
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
+            {enrollments.map((enrollment) => (
+              <tr key={enrollment.id}>
+                <td className="sticky-col">
+                  <StudentCell enrollment={enrollment} />
+                </td>
+                <td>
+                  <GuardianCell enrollment={enrollment} />
+                </td>
+                <td>{enrollment.modalityName}</td>
+                <td>Dia {enrollment.due_day}</td>
+                {showMensalidade && <td>{formatMoney(enrollment.monthly_value)}</td>}
+                <td>
+                  <span className={`badge ${enrollment.paymentStatusClass}`}>{enrollment.paymentStatusLabel}</span>
+                </td>
+                <td>{renderActions(enrollment)}</td>
+              </tr>
+            ))}
           </tbody>
         </table>
+      </div>
+      <div className="list-cards mobile-only" aria-label={context === "payments" ? "Pagamentos em cartões" : "Cadastros em cartões"}>
+        {enrollments.map((enrollment) => (
+          <article className="list-card" key={enrollment.id}>
+            <div className="list-card-head">
+              <div>
+                <strong>{enrollment.studentName}</strong>
+                <span className="list-card-meta">{enrollment.modalityName}</span>
+              </div>
+              <span className={`badge ${enrollment.paymentStatusClass}`}>{enrollment.paymentStatusLabel}</span>
+            </div>
+            <div className="list-card-body">
+              <span>Resp.: {enrollment.guardianName}</span>
+              <span>Vence dia {enrollment.due_day}</span>
+              {showMensalidade && <span>{formatMoney(enrollment.monthly_value)}</span>}
+            </div>
+            <div className="list-card-actions">{renderActions(enrollment)}</div>
+          </article>
+        ))}
       </div>
     </section>
   );
 }
+
 
 function MetricGrid({ totals, isAdmin }) {
   if (isAdmin) {

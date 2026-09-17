@@ -902,6 +902,115 @@ tr:last-child td {
   font-weight: 800;
 }
 
+
+.context-banner {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid rgba(47, 122, 90, 0.22);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #eef8f2 0%, #e7f3ec 100%);
+  color: var(--ink);
+  margin-bottom: 16px;
+  padding: 14px 16px;
+}
+
+.context-banner > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.context-banner strong {
+  font-size: 1rem;
+  letter-spacing: -0.01em;
+}
+
+.context-banner span {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.context-banner .button {
+  flex-shrink: 0;
+}
+
+.desktop-only {
+  display: block;
+}
+
+.mobile-only {
+  display: none;
+}
+
+.list-cards {
+  display: none;
+  gap: 12px;
+  padding: 14px;
+}
+
+.list-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgba(28, 35, 32, 0.08);
+  border-radius: 16px;
+  background: #fff;
+  padding: 14px;
+  box-shadow: var(--shadow-soft);
+}
+
+.list-card-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.list-card-head > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.list-card-head strong {
+  font-size: 1.02rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.list-card-meta {
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.list-card-body {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.list-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.list-card-actions .table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+
+.list-card-actions .table-action {
+  width: auto;
+  flex: 1 1 auto;
+}
+
 @media (max-width: 1080px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -994,12 +1103,35 @@ tr:last-child td {
     min-width: 460px;
   }
 
+  .desktop-only {
+    display: none !important;
+  }
+
+  .mobile-only,
+  .list-cards.mobile-only {
+    display: grid !important;
+  }
+
   .table-wrap {
-    margin: 0 -4px;
-    padding: 0 4px;
+    margin: 0;
+    padding: 0;
+    overflow: visible;
   }
 
   .data-table {
-    min-width: 640px;
+    min-width: 0;
+  }
+
+  .context-banner {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .context-banner .button {
+    width: 100%;
+  }
+
+  .list-card-actions .table-action {
+    width: 100%;
   }
 }
