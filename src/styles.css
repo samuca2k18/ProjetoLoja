@@ -245,6 +245,7 @@ pre {
 .field {
   display: grid;
   gap: 7px;
+  min-width: 0;
 }
 
 .field.compact {
@@ -266,6 +267,8 @@ pre {
 .user-row input,
 .user-row select {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   min-height: 42px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -412,7 +415,7 @@ pre {
 
 .split-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 380px);
   gap: 18px;
   align-items: start;
 }
@@ -457,8 +460,13 @@ pre {
 
 .search-box {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 170px 140px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.search-box > input[type="search"] {
+  grid-column: 1 / -1;
+  min-width: 0;
 }
 
 .report-filter {
@@ -592,6 +600,14 @@ tr:last-child td {
 
 .form-grid .wide {
   grid-column: 1 / -1;
+}
+
+.sticky-panel .form-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.sticky-panel .form-grid .field {
+  min-width: 0;
 }
 
 .form-actions {
@@ -872,17 +888,19 @@ tr:last-child td {
 }
 
 .monthly-chart-scroll {
+  width: 100%;
   max-width: 100%;
   overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
-  padding-bottom: 4px;
+  overscroll-behavior-x: contain;
+  padding-bottom: 2px;
 }
 
 .monthly-chart {
   display: block;
   width: 100%;
-  max-width: 100%;
+  max-width: none;
   min-width: 560px;
   height: auto;
   min-height: 200px;
@@ -921,7 +939,7 @@ tr:last-child td {
 
 .monthly-label {
   fill: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: capitalize;
   pointer-events: none;
@@ -1124,10 +1142,58 @@ tr:last-child td {
   .sidebar {
     position: static;
     height: auto;
+    gap: 12px;
+    padding: 14px 16px;
+  }
+
+  .sidebar-header {
+    gap: 10px;
+  }
+
+  .sidebar-header .brand-mark {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
   }
 
   .nav-list {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 8px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    padding-bottom: 2px;
+  }
+
+  .nav-button {
+    flex: 0 0 auto;
+    width: auto;
+    min-height: 36px;
+    gap: 8px;
+    padding: 8px 12px;
+    white-space: nowrap;
+  }
+
+  .nav-button svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+  }
+
+  .sidebar-footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-top: 0;
+  }
+
+  .sidebar-footer .button.full {
+    width: auto;
+    flex: 1 1 auto;
+    min-height: 36px;
+    padding: 8px 12px;
   }
 
   .metric-grid {
@@ -1140,6 +1206,10 @@ tr:last-child td {
 
   .sticky-panel {
     position: static;
+  }
+
+  .sticky-panel .form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -1180,10 +1250,22 @@ tr:last-child td {
   .search-box,
   .form-grid,
   .metric-grid,
-  .nav-list,
   .report-controls,
   .user-row {
     grid-template-columns: 1fr;
+  }
+
+  .sticky-panel .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    gap: 10px;
+    padding: 12px 14px;
+  }
+
+  .sidebar-header span:not(.brand-mark) {
+    font-size: 0.8rem;
   }
 
   .bar-row {
@@ -1205,7 +1287,7 @@ tr:last-child td {
   }
 
   .monthly-chart {
-    min-width: 520px;
+    min-width: 480px;
   }
 
   .method-breakdown-grid {

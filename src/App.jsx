@@ -2042,21 +2042,20 @@ function MonthlyReceivedChart({ series, methods = [] }) {
   const max = Math.max(1, ...series.map((item) => item.amount));
   const chartHeight = 148;
   const topPad = 28;
-  const bottomPad = 52;
-  const leftPad = 12;
-  const rightPad = 16;
-  const barGap = 10;
-  const innerWidth = 640;
+  const bottomPad = 36;
+  const leftPad = 8;
+  const rightPad = 8;
+  const barGap = 8;
+  const innerWidth = 680;
   const barWidth = series.length
-    ? Math.max(22, Math.floor((innerWidth - barGap * (series.length - 1)) / series.length))
-    : 24;
+    ? Math.max(28, Math.floor((innerWidth - barGap * (series.length - 1)) / series.length))
+    : 28;
   const plotWidth = series.length * barWidth + Math.max(0, series.length - 1) * barGap;
   const width = leftPad + plotWidth + rightPad;
   const height = topPad + chartHeight + bottomPad;
   const total = series.reduce((sum, item) => sum + item.amount, 0);
   const methodTotalCount = methods.reduce((sum, item) => sum + item.count, 0);
   const methodMax = Math.max(1, ...methods.map((item) => item.amount));
-  const labelStep = series.length > 8 ? 2 : 1;
 
   return (
     <section className="panel monthly-chart-panel">
@@ -2089,7 +2088,6 @@ function MonthlyReceivedChart({ series, methods = [] }) {
               const barHeight = item.amount > 0 ? Math.max(8, rawHeight) : 2;
               const x = leftPad + index * (barWidth + barGap);
               const y = topPad + chartHeight - barHeight;
-              const showLabel = index % labelStep === 0 || index === series.length - 1;
               return (
                 <g key={item.month}>
                   <title>{`${item.label}: ${formatMoney(item.amount)}`}</title>
@@ -2114,17 +2112,14 @@ function MonthlyReceivedChart({ series, methods = [] }) {
                       {formatCompactMoney(item.amount)}
                     </text>
                   )}
-                  {showLabel && (
-                    <text
-                      className="monthly-label"
-                      x={x + barWidth / 2}
-                      y={topPad + chartHeight + 14}
-                      textAnchor="end"
-                      transform={`rotate(-35 ${x + barWidth / 2} ${topPad + chartHeight + 14})`}
-                    >
-                      {item.label}
-                    </text>
-                  )}
+                  <text
+                    className="monthly-label"
+                    x={x + barWidth / 2}
+                    y={topPad + chartHeight + 18}
+                    textAnchor="middle"
+                  >
+                    {item.label}
+                  </text>
                 </g>
               );
             })}
