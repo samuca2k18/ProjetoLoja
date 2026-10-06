@@ -62,6 +62,7 @@ where email = 'email-do-admin@exemplo.com';
 - Um aluno pode ter varias modalidades no mesmo cadastro.
 - Pais/responsaveis com varios filhos ficam agrupados pelo mesmo cadastro de responsavel.
 - Funcionarios podem cadastrar responsaveis, alunos, modalidades do aluno e pagamentos.
+- Funcionarios podem excluir aluno. Isso remove as matriculas ligadas a esse aluno.
 - Lancamento de pagamento pode dar baixa em varias matriculas juntas.
 - Cada pagamento guarda o funcionario que lancou a baixa pelo perfil, nome e email.
 - Administrador ve relatorios com responsavel, alunos/modalidades pagos juntos, forma, valor e funcionario que lancou.

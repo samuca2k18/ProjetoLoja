@@ -746,11 +746,12 @@ using (public.is_staff_or_admin())
 with check (public.is_staff_or_admin());
 
 drop policy if exists "Admins can delete enrollments" on public.student_enrollments;
-create policy "Admins can delete enrollments"
+drop policy if exists "Staff can delete enrollments" on public.student_enrollments;
+create policy "Staff can delete enrollments"
 on public.student_enrollments
 for delete
 to authenticated
-using (public.is_admin());
+using (public.is_staff_or_admin());
 
 drop policy if exists "Admins can read payments" on public.payments;
 create policy "Admins can read payments"

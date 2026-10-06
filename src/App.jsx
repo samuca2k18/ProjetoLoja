@@ -1675,12 +1675,10 @@ function EnrollmentTable({
         <button className="table-action secondary" onClick={() => onEnrollmentStatus(enrollment)}>
           {enrollment.status === "active" ? "Pausar" : "Ativar"}
         </button>
-        {isAdmin && (
-          <button className="table-action danger" onClick={() => onDeleteStudent(enrollment)}>
-            {icons.trash}
-            Excluir aluno
-          </button>
-        )}
+        <button className="table-action danger" onClick={() => onDeleteStudent(enrollment)}>
+          {icons.trash}
+          Excluir aluno
+        </button>
       </span>
     );
   }
