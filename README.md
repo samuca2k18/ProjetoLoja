@@ -87,3 +87,18 @@ where email = 'email-do-admin@exemplo.com';
 - Recibos em PDF.
 - Avisos por WhatsApp.
 - Tela de modalidades para editar valores padrao sem SQL.
+
+## Atualização do banco (out/2026)
+
+Rode `supabase/migrations/20261012_historico_aprovacao_rpcs.sql` no **Supabase > SQL Editor**
+(ou `npm run db:apply`, que já inclui o mesmo conteúdo no fim do `schema.sql`). É idempotente e não apaga dados.
+
+- Excluir aluno agora só arquiva (`students.deleted_at`): pagamentos e valores continuam nos relatórios
+  (nome do aluno/modalidade ficam gravados em cada item pago).
+- Contas novas entram **sem acesso** (`profiles.approved = false`) até um admin aprovar em Usuários.
+  Todos os usuários que já existiam continuam liberados.
+- `record_payment` valida família, valores e exige observação quando o valor fica abaixo da mensalidade.
+- `update_payment` corrige pagamento numa transação só.
+
+Enquanto a atualização não for aplicada, o app continua funcionando no modo antigo, mas **Excluir aluno fica bloqueado**
+(para não apagar histórico).

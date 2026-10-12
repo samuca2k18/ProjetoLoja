@@ -155,14 +155,19 @@ function buildMonthlyReceived(payments, monthCount = 12) {
   for (let index = monthCount - 1; index >= 0; index -= 1) {
     const date = new Date(now.getFullYear(), now.getMonth() - index, 1);
     const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-    buckets.push({ month: key, label: shortMonthLabel(key), amount: 0 });
+    buckets.push({ month: key, label: shortMonthLabel(key), amount: 0, byMethod: {} });
   }
 
   const byMonth = new Map(buckets.map((item) => [item.month, item]));
   for (const payment of payments) {
     const key = monthFromDate(payment.paid_at);
     const bucket = byMonth.get(key);
-    if (bucket) bucket.amount += Number(payment.amount || 0);
+    if (bucket) {
+      const value = Number(payment.amount || 0);
+      bucket.amount += value;
+      const method = payment.method || "other";
+      bucket.byMethod[method] = (bucket.byMethod[method] || 0) + value;
+    }
   }
 
   return buckets;
@@ -202,6 +207,81 @@ function buildMethodBreakdown(payments) {
     .sort((a, b) => b.amount - a.amount || b.count - a.count);
 }
 
+const methodColors = {
+  pix: "#1f9e89",
+  cash: "#3f8f3a",
+  card: "#5b5fc7",
+  transfer: "#d08a1c",
+  other: "#8a948f",
+};
+
+function methodColor(value) {
+  return methodColors[value] || methodColors.other;
+}
+
+function lastDayOfMonth(month) {
+  const [year, value] = String(month).split("-").map(Number);
+  return new Date(year, value, 0).getDate();
+}
+
+// Vencimento dia 31 em fevereiro vira o último dia do mês (28/29), etc.
+function effectiveDueDay(month, dueDay) {
+  const day = Math.max(1, Number(dueDay) || 1);
+  return Math.min(day, lastDayOfMonth(month));
+}
+
+function dueDateFor(month, dueDay) {
+  return `${month}-${String(effectiveDueDay(month, dueDay)).padStart(2, "0")}`;
+}
+
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizePhone(value) {
+  let digits = String(value || "").replace(/\D/g, "");
+  if ((digits.length === 12 || digits.length === 13) && digits.startsWith("55")) digits = digits.slice(2);
+  return digits;
+}
+
+function useDebouncedValue(value, delay = 500) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delay);
+    return () => window.clearTimeout(timer);
+  }, [value, delay]);
+  return debounced;
+}
+
+const errorTranslations = [
+  [/invalid login credentials/i, "E-mail ou senha incorretos."],
+  [/email not confirmed/i, "Seu e-mail ainda não foi confirmado."],
+  [/user not found/i, "Usuário não encontrado."],
+  [/rate limit|too many requests|over_request_rate_limit/i, "Muitas tentativas seguidas. Aguarde alguns minutos e tente de novo."],
+  [/failed to fetch|networkerror|network request failed|load failed/i, "Sem conexão com o servidor. Verifique a internet e tente de novo."],
+  [/jwt expired|invalid jwt|refresh token/i, "Sua sessão expirou. Entre novamente."],
+  [/password should be at least/i, "A senha precisa ter pelo menos 6 caracteres."],
+  [/signups not allowed|signup is disabled/i, "Cadastro desativado. Peça acesso ao administrador."],
+  [/row-level security|permission denied/i, "Você não tem permissão para fazer isso."],
+  [/guardians_email_unique/i, "Já existe um responsável com esse e-mail."],
+  [/duplicate key/i, "Esse registro já existe."],
+  [/violates foreign key/i, "Esse registro está ligado a outros dados e não pode ser alterado assim."],
+  [/violates check constraint/i, "Algum valor informado é inválido. Confira os campos."],
+  [/invalid input syntax/i, "Algum campo está com formato inválido."],
+];
+
+function translateError(error) {
+  const message = String(error?.message || error || "").trim();
+  if (!message) return "Algo deu errado. Tente de novo.";
+  for (const [pattern, translated] of errorTranslations) {
+    if (pattern.test(message)) return translated;
+  }
+  if (error?.code === "PGRST116") return "Registro não encontrado.";
+  // Mensagens do nosso banco já vêm em português.
+  if (/[ãõçáéíóúâêô]|\b(não|já|para|uma|pagamento|matrícula|aluno|valor)\b/i.test(message)) return message;
+  return `Não foi possível concluir a operação. Tente de novo. (${message})`;
+}
+
 function normalizeText(value) {
   return String(value || "")
     .normalize("NFD")
@@ -226,11 +306,28 @@ function App() {
   const [editingPayment, setEditingPayment] = useState(null);
   const [reportStart, setReportStart] = useState(startOfMonth(currentMonth()));
   const [reportEnd, setReportEnd] = useState(endOfMonth(currentMonth()));
+  const debouncedReportStart = useDebouncedValue(reportStart, 500);
+  const debouncedReportEnd = useDebouncedValue(reportEnd, 500);
+  const [dialog, setDialog] = useState(null);
   const [toast, setToast] = useState("");
   const [error, setError] = useState("");
   const [data, setData] = useState(emptyData);
 
   const isAdmin = profile?.role === "admin";
+  // "v2" = banco já atualizado (histórico preservado, aprovação de contas).
+  const hasHistorySchema = Boolean(profile && Object.prototype.hasOwnProperty.call(profile, "approved"));
+  const isPendingApproval = hasHistorySchema && profile?.approved === false;
+
+  const askConfirm = useCallback((options) => {
+    return new Promise((resolve) => {
+      setDialog({ ...options, resolve });
+    });
+  }, []);
+
+  function closeDialog(result) {
+    if (dialog?.resolve) dialog.resolve(result);
+    setDialog(null);
+  }
 
   const showToast = useCallback((message) => {
     setToast(message);
@@ -241,7 +338,7 @@ function App() {
   const loadProfile = useCallback(async (userId) => {
     const { data: profileRow, error: profileError } = await supabase
       .from("profiles")
-      .select("id, email, full_name, role")
+      .select("*")
       .eq("id", userId)
       .single();
 
@@ -271,7 +368,7 @@ function App() {
           supabase
             .from("student_enrollments")
             .select(
-              "id, monthly_value, due_day, status, notes, student:students(id, full_name, phone, guardian_id, guardian:guardians(id, full_name, email, phone)), modality:modalities(id, name, default_monthly_value)",
+              "*, student:students(*, guardian:guardians(id, full_name, email, phone)), modality:modalities(id, name, default_monthly_value)",
             )
             .order("created_at", { ascending: true }),
           supabase
@@ -282,18 +379,18 @@ function App() {
 
         if (shouldLoadPayments) {
           const chartStart = monthsAgoStart(12);
-          const paymentsFrom = reportStart < chartStart ? reportStart : chartStart;
-          const paymentsTo = reportEnd > localDate() ? reportEnd : localDate();
+          const paymentsFrom = debouncedReportStart < chartStart ? debouncedReportStart : chartStart;
+          const paymentsTo = debouncedReportEnd > localDate() ? debouncedReportEnd : localDate();
           requests.push(
             supabase
               .from("payments")
               .select(
-                "id, reference_month, paid_at, amount, method, note, registered_by, payer_guardian_id, created_at, payer:guardians(id, full_name, email, phone), registered_by_profile:profiles!payments_registered_by_fkey(id, email, full_name), items:payment_items(id, enrollment_id, amount, enrollment:student_enrollments(id, monthly_value, student:students(id, full_name), modality:modalities(id, name)))",
+                "*, payer:guardians(id, full_name, email, phone), registered_by_profile:profiles!payments_registered_by_fkey(id, email, full_name), items:payment_items(*, enrollment:student_enrollments(id, monthly_value, student:students(id, full_name), modality:modalities(id, name)))",
               )
               .gte("paid_at", paymentsFrom)
               .lte("paid_at", paymentsTo)
               .order("paid_at", { ascending: false }),
-            supabase.from("profiles").select("id, email, full_name, role, created_at").order("full_name"),
+            supabase.from("profiles").select("*").order("created_at"),
           );
         }
 
@@ -319,26 +416,31 @@ function App() {
 
         const loadedPayments = paymentsResult?.data || [];
         const periodPayments = loadedPayments.filter(
-          (payment) => payment.paid_at >= reportStart && payment.paid_at <= reportEnd,
+          (payment) => payment.paid_at >= debouncedReportStart && payment.paid_at <= debouncedReportEnd,
+        );
+        // Aluno excluído / modalidade removida somem das listas, mas o histórico fica.
+        const visibleEnrollments = (enrollmentsResult.data || []).filter(
+          (enrollment) => !enrollment.archived_at && !enrollment.student?.deleted_at,
         );
 
         setData({
           modalities: modalitiesResult.data || [],
           guardians: guardiansResult.data || [],
-          enrollments: enrollmentsResult.data || [],
+          enrollments: visibleEnrollments,
           paymentStatuses: statusesResult.data || [],
           payments: periodPayments,
           chartPayments: loadedPayments,
           profiles: profilesResult?.data || [],
         });
       } catch (requestError) {
-        setError(requestError.message);
+        setError(translateError(requestError));
       } finally {
         setAppLoading(false);
       }
     },
-    [month, profile?.role, reportEnd, reportStart, session?.user],
+    [month, profile?.role, debouncedReportEnd, debouncedReportStart, session?.user],
   );
+  
 
   useEffect(() => {
     if (!isSupabaseConfigured) {
@@ -372,7 +474,7 @@ function App() {
     if (!session?.user) return;
 
     loadProfile(session.user.id).catch((profileError) => {
-      setError(profileError.message);
+      setError(translateError(profileError));
     });
   }, [loadProfile, session?.user]);
 
@@ -480,6 +582,7 @@ function App() {
           status: summaryStatus.isActive ? "active" : "paused",
           enrollmentIds: group.enrollmentIds,
           primaryEnrollment: group.primaryEnrollment,
+          rows: group.rows,
         };
       })
       .sort(
@@ -569,35 +672,91 @@ function App() {
     setView("payments");
   }
 
-  async function resolveGuardian(form) {
+  async function resolveGuardian(form, currentGuardian = null) {
     const fullName = String(form.get("guardian_name") || "").trim();
-    const email = String(form.get("guardian_email") || "").trim().toLowerCase() || null;
+    const email = normalizeEmail(form.get("guardian_email")) || null;
     const phone = String(form.get("guardian_phone") || "").trim() || null;
+    const phoneKey = normalizePhone(phone);
 
     if (!fullName && !email && !phone) return null;
 
-    if (email) {
-      const { data: existingGuardian, error: findError } = await supabase
-        .from("guardians")
-        .select("id")
-        .eq("email", email)
-        .maybeSingle();
-
-      if (findError) throw findError;
-
-      if (existingGuardian) {
-        const { error: updateError } = await supabase
+    // 1) Procura responsável já existente por e-mail ou telefone (normalizados).
+    let existing = null;
+    if (currentGuardian?.id) {
+      existing = data.guardians.find((guardian) => guardian.id === currentGuardian.id) || currentGuardian;
+    }
+    if (!existing && email) {
+      existing = data.guardians.find((guardian) => normalizeEmail(guardian.email) === email) || null;
+      if (!existing) {
+        const { data: found, error: findError } = await supabase
           .from("guardians")
-          .update({
-            full_name: fullName || email,
-            email,
-            phone,
-          })
-          .eq("id", existingGuardian.id);
-
-        if (updateError) throw updateError;
-        return existingGuardian.id;
+          .select("id, full_name, email, phone")
+          .ilike("email", email)
+          .maybeSingle();
+        if (findError) throw findError;
+        existing = found;
       }
+    }
+    if (!existing && phoneKey.length >= 8) {
+      existing = data.guardians.find((guardian) => normalizePhone(guardian.phone) === phoneKey) || null;
+    }
+    if (!existing && !email && !phoneKey && fullName) {
+      const sameName = data.guardians.filter(
+        (guardian) => normalizeText(guardian.full_name) === normalizeText(fullName),
+      );
+      if (sameName.length === 1) {
+        const reuse = await askConfirm({
+          title: "Responsável com o mesmo nome",
+          message: `Já existe um responsável chamado ${sameName[0].full_name}. É a mesma pessoa?`,
+          confirmLabel: "Sim, usar o existente",
+          cancelLabel: "Não, cadastrar novo",
+        });
+        if (reuse) existing = sameName[0];
+      }
+    }
+
+    if (existing) {
+      // 2) Só preenche campos vazios; se algo mudou, pergunta antes de sobrescrever.
+      const fillEmpty = {};
+      const changes = [];
+      const fields = [
+        ["full_name", fullName, "nome"],
+        ["email", email, "e-mail"],
+        ["phone", phone, "telefone"],
+      ];
+      for (const [key, value, label] of fields) {
+        if (!value) continue;
+        const current = existing[key] || "";
+        const same =
+          key === "email"
+            ? normalizeEmail(current) === value
+            : key === "phone"
+              ? normalizePhone(current) === normalizePhone(value)
+              : normalizeText(current) === normalizeText(value);
+        if (!current) fillEmpty[key] = value;
+        else if (!same) changes.push({ key, value, label, current });
+      }
+
+      let payload = fillEmpty;
+      if (changes.length) {
+        const overwrite = await askConfirm({
+          title: "Atualizar dados do responsável?",
+          message: `${existing.full_name} já está cadastrado com ${changes
+            .map((change) => `${change.label} "${change.current}"`)
+            .join(", ")}. Trocar por ${changes.map((change) => `"${change.value}"`).join(", ")}?`,
+          confirmLabel: "Atualizar",
+          cancelLabel: "Manter como está",
+        });
+        if (overwrite) {
+          payload = { ...fillEmpty, ...Object.fromEntries(changes.map((change) => [change.key, change.value])) };
+        }
+      }
+
+      if (Object.keys(payload).length) {
+        const { error: updateError } = await supabase.from("guardians").update(payload).eq("id", existing.id);
+        if (updateError) throw updateError;
+      }
+      return existing.id;
     }
 
     const { data: insertedGuardian, error: insertError } = await supabase
@@ -662,18 +821,51 @@ function App() {
       showToast("Cadastro salvo.");
       loadData();
     } catch (requestError) {
-      setError(requestError.message);
+      setError(translateError(requestError));
     }
   }
 
-  async function handleUpdateEnrollment(event) {
+  async function handleUpdateEnrollment(event, rows) {
     event.preventDefault();
     if (!editingEnrollment) return;
 
     const form = new FormData(event.currentTarget);
+    const activeRows = rows.filter((row) => !row.removed);
+
+    if (!activeRows.length) {
+      setError("O aluno precisa ter pelo menos uma modalidade. Para tirar o aluno, use Excluir aluno.");
+      return;
+    }
+    if (activeRows.some((row) => !row.modality_id)) {
+      setError("Escolha a modalidade de todas as linhas.");
+      return;
+    }
+    const modalityKeys = activeRows.map((row) => row.modality_id);
+    if (new Set(modalityKeys).size !== modalityKeys.length) {
+      setError("A mesma modalidade aparece duas vezes para esse aluno.");
+      return;
+    }
+    if (activeRows.some((row) => !(Number(row.due_day) >= 1 && Number(row.due_day) <= 31))) {
+      setError("O vencimento precisa ser um dia entre 1 e 31.");
+      return;
+    }
+
+    const removedRows = rows.filter((row) => row.removed && row.id);
+    if (removedRows.length) {
+      const ok = await askConfirm({
+        title: "Remover modalidade?",
+        message: `${removedRows.length === 1 ? "A modalidade" : "As modalidades"} ${removedRows
+          .map((row) => row.modalityName || "selecionada")
+          .join(", ")} ${removedRows.length === 1 ? "sai" : "saem"} do cadastro. Os pagamentos já lançados continuam no histórico e nos relatórios.`,
+        confirmLabel: "Remover",
+        danger: true,
+      });
+      if (!ok) return;
+    }
 
     try {
-      const guardianId = await resolveGuardian(form);
+      const guardianId = await resolveGuardian(form, editingEnrollment.guardian);
+      const studentId = editingEnrollment.student.id;
       const { error: studentError } = await supabase
         .from("students")
         .update({
@@ -681,28 +873,45 @@ function App() {
           full_name: String(form.get("full_name")).trim(),
           phone: String(form.get("phone")).trim() || null,
         })
-        .eq("id", editingEnrollment.student.id);
+        .eq("id", studentId);
 
       if (studentError) throw studentError;
 
-      const { error: enrollmentError } = await supabase
-        .from("student_enrollments")
-        .update({
-          modality_id: form.get("modality_id"),
-          monthly_value: Number(form.get("monthly_value")),
-          due_day: Number(form.get("due_day")),
-          notes: String(form.get("notes")).trim() || null,
-          status: form.get("status"),
-        })
-        .eq("id", editingEnrollment.id);
+      for (const row of rows) {
+        if (row.removed) {
+          if (!row.id) continue;
+          // Nunca apaga a matrícula: cancela (e arquiva, se o banco já tiver suporte).
+          const archivePayload = hasHistorySchema
+            ? { status: "cancelled", archived_at: new Date().toISOString() }
+            : { status: "cancelled" };
+          const { error: archiveError } = await supabase
+            .from("student_enrollments")
+            .update(archivePayload)
+            .eq("id", row.id);
+          if (archiveError) throw archiveError;
+          continue;
+        }
 
-      if (enrollmentError) throw enrollmentError;
+        const payload = {
+          modality_id: row.modality_id,
+          monthly_value: Number(row.monthly_value || 0),
+          due_day: Number(row.due_day),
+          status: row.status,
+          notes: String(row.notes || "").trim() || null,
+        };
+
+        const { error: rowError } = row.id
+          ? await supabase.from("student_enrollments").update(payload).eq("id", row.id)
+          : await supabase.from("student_enrollments").insert({ ...payload, student_id: studentId });
+        if (rowError) throw rowError;
+      }
 
       setEditingEnrollment(null);
       showToast("Cadastro atualizado.");
       loadData();
     } catch (requestError) {
-      setError(requestError.message);
+      setError(translateError(requestError));
+      loadData();
     }
   }
 
@@ -724,6 +933,22 @@ function App() {
       .filter(Boolean);
 
     const amount = Number(form.get("amount"));
+    const note = String(form.get("note")).trim() || null;
+    const expected = sumEnrollments(selectedItems);
+
+    if (!Number.isFinite(amount) || amount < 0) {
+      setError("Informe um valor válido.");
+      return;
+    }
+    if ((amount === 0 && expected > 0) || amount < expected - 0.001) {
+      if (!note) {
+        setError(
+          `O valor (${formatMoney(amount)}) está abaixo da mensalidade (${formatMoney(expected)}). Explique na observação: desconto, bolsa, pagamento parcial...`,
+        );
+        return;
+      }
+    }
+
     const itemAmounts = allocatePaymentItems(amount, selectedItems);
 
     const { error: paymentError } = await supabase.rpc("record_payment", {
@@ -731,13 +956,13 @@ function App() {
       p_paid_at: form.get("paid_at"),
       p_amount: amount,
       p_method: form.get("method"),
-      p_note: String(form.get("note")).trim() || null,
+      p_note: note,
       p_payer_guardian_id: selectedEnrollment.guardian?.id || null,
       p_items: itemAmounts,
     });
 
     if (paymentError) {
-      setError(paymentError.code === "23505" ? paymentError.message : paymentError.message);
+      setError(translateError(paymentError));
       return;
     }
 
@@ -757,49 +982,77 @@ function App() {
     const form = new FormData(event.currentTarget);
     const nextReferenceMonth = String(form.get("reference_month"));
     const amount = Number(form.get("amount"));
-    const itemEnrollments = (editingPayment.items || []).map((item) => ({
-      id: item.enrollment_id,
-      monthly_value: item.enrollment?.monthly_value || item.amount,
-    }));
-    const itemAmounts = allocatePaymentItems(amount, itemEnrollments);
+    const note = String(form.get("note")).trim() || null;
 
-    const { error: updateError } = await supabase
-      .from("payments")
-      .update({
-        reference_month: referenceDate(nextReferenceMonth),
-        paid_at: form.get("paid_at"),
-        amount,
-        method: form.get("method"),
-        note: String(form.get("note")).trim() || null,
-      })
-      .eq("id", editingPayment.id);
-
-    if (updateError) {
-      setError(updateError.message);
+    if (!Number.isFinite(amount) || amount < 0) {
+      setError("Informe um valor válido.");
+      return;
+    }
+    if (amount === 0 && !note) {
+      setError("Pagamento de R$ 0,00 precisa de uma observação (ex.: bolsa).");
       return;
     }
 
-    const itemUpdates = await Promise.all(
-      (editingPayment.items || []).map((item) => {
-        const nextItem = itemAmounts.find((allocatedItem) => allocatedItem.enrollment_id === item.enrollment_id);
-        return supabase
-          .from("payment_items")
-          .update({
-            reference_month: referenceDate(nextReferenceMonth),
-            amount: nextItem?.amount ?? item.amount,
-          })
-          .eq("id", item.id);
-      }),
-    );
+    const itemEnrollments = (editingPayment.items || []).map((item) => ({
+      id: item.id,
+      monthly_value: item.enrollment?.monthly_value || item.amount,
+    }));
+    const itemAmounts = allocatePaymentItems(amount, itemEnrollments).map((item) => ({
+      id: item.enrollment_id,
+      amount: item.amount,
+    }));
 
-    const itemError = itemUpdates.find((result) => result.error)?.error;
-    if (itemError) {
-      setError(
-        itemError.code === "23505"
-          ? "Uma das matrículas já tem pagamento lançado nesse mês."
-          : itemError.message,
+    if (hasHistorySchema) {
+      // Tudo numa transação só no banco: ou salva tudo, ou nada.
+      const { error: rpcError } = await supabase.rpc("update_payment", {
+        p_payment_id: editingPayment.id,
+        p_reference_month: referenceDate(nextReferenceMonth),
+        p_paid_at: form.get("paid_at"),
+        p_amount: amount,
+        p_method: form.get("method"),
+        p_note: note,
+        p_items: itemAmounts,
+      });
+      if (rpcError) {
+        setError(translateError(rpcError));
+        return;
+      }
+    } else {
+      const { error: updateError } = await supabase
+        .from("payments")
+        .update({
+          reference_month: referenceDate(nextReferenceMonth),
+          paid_at: form.get("paid_at"),
+          amount,
+          method: form.get("method"),
+          note,
+        })
+        .eq("id", editingPayment.id);
+
+      if (updateError) {
+        setError(translateError(updateError));
+        return;
+      }
+
+      const itemUpdates = await Promise.all(
+        itemAmounts.map((item) =>
+          supabase
+            .from("payment_items")
+            .update({ reference_month: referenceDate(nextReferenceMonth), amount: item.amount })
+            .eq("id", item.id),
+        ),
       );
-      return;
+
+      const itemError = itemUpdates.find((result) => result.error)?.error;
+      if (itemError) {
+        setError(
+          itemError.code === "23505"
+            ? "Uma das matrículas já tem pagamento lançado nesse mês."
+            : translateError(itemError),
+        );
+        loadData();
+        return;
+      }
     }
 
     setEditingPayment(null);
@@ -818,25 +1071,37 @@ function App() {
       full_name: String(form.get("full_name")).trim(),
       role: form.get("role"),
     };
+    if (hasHistorySchema && profileId !== session.user.id) {
+      payload.approved = form.get("approved") === "true";
+    }
 
     const { error: updateError } = await supabase.from("profiles").update(payload).eq("id", profileId);
 
     if (updateError) {
-      setError(updateError.message);
+      setError(translateError(updateError));
       return;
     }
 
-    showToast("Usuario atualizado.");
+    showToast("Usuário atualizado.");
     loadData();
     if (profileId === session.user.id) {
       loadProfile(profileId);
     }
   }
 
+  async function handleApproveProfile(user, approved) {
+    const { error: updateError } = await supabase.from("profiles").update({ approved }).eq("id", user.id);
+    if (updateError) {
+      setError(translateError(updateError));
+      return;
+    }
+    showToast(approved ? "Acesso liberado." : "Acesso bloqueado.");
+    loadData();
+  }
+
   async function handleEnrollmentStatus(enrollment) {
-    const enrollmentIds = enrollment.enrollmentIds?.length ? enrollment.enrollmentIds : [enrollment.id];
-    if (!enrollmentIds.length) {
-      setError("Matriculas invalidas para atualizar status.");
+    if (!enrollment?.id) {
+      setError("Matrícula inválida para atualizar o status.");
       return;
     }
 
@@ -844,14 +1109,16 @@ function App() {
     const { error: updateError } = await supabase
       .from("student_enrollments")
       .update({ status: nextStatus })
-      .in("id", enrollmentIds);
+      .eq("id", enrollment.id);
 
     if (updateError) {
-      setError(updateError.message);
+      setError(translateError(updateError));
       return;
     }
 
-    showToast(nextStatus === "active" ? "Matriculas ativadas." : "Matriculas pausadas.");
+    showToast(
+      `${enrollment.modalityName || "Matrícula"} ${nextStatus === "active" ? "ativada" : "pausada"}.`,
+    );
     loadData();
   }
 
@@ -864,12 +1131,26 @@ function App() {
       return;
     }
 
-    if (!window.confirm(`Excluir ${studentName}? Isso remove todas as matrículas desse aluno.`)) return;
+    if (!hasHistorySchema) {
+      setError(
+        "A exclusão de alunos está temporariamente desativada até a atualização do banco ser aplicada (assim nenhum pagamento antigo é perdido). Por enquanto, use Pausar.",
+      );
+      return;
+    }
 
-    const { error: deleteError } = await supabase.from("students").delete().eq("id", studentId);
+    const ok = await askConfirm({
+      title: `Excluir ${studentName}?`,
+      message:
+        "O aluno sai das listas e das pendências. Os pagamentos já feitos e os valores continuam no histórico e nos relatórios.",
+      confirmLabel: "Excluir aluno",
+      danger: true,
+    });
+    if (!ok) return;
+
+    const { error: deleteError } = await supabase.rpc("archive_student", { p_student_id: studentId });
 
     if (deleteError) {
-      setError(deleteError.message);
+      setError(translateError(deleteError));
       return;
     }
 
@@ -881,17 +1162,23 @@ function App() {
       setPaymentOrigin(null);
     }
 
-    showToast("Aluno excluído.");
+    showToast("Aluno excluído. O histórico de pagamentos foi mantido.");
     loadData();
   }
 
   async function handleDeletePayment(paymentId) {
-    if (!window.confirm("Estornar esse pagamento?")) return;
+    const ok = await askConfirm({
+      title: "Estornar pagamento?",
+      message: "A baixa é desfeita e a mensalidade volta a aparecer como pendente.",
+      confirmLabel: "Estornar",
+      danger: true,
+    });
+    if (!ok) return;
 
     const { error: deleteError } = await supabase.from("payments").delete().eq("id", paymentId);
 
     if (deleteError) {
-      setError(deleteError.message);
+      setError(translateError(deleteError));
       return;
     }
 
@@ -909,6 +1196,10 @@ function App() {
 
   if (!session) {
     return <AuthScreen />;
+  }
+
+  if (isPendingApproval) {
+    return <PendingApprovalScreen email={session.user.email} onSignOut={handleSignOut} />;
   }
 
   return (
@@ -946,6 +1237,11 @@ function App() {
 
         <div className="sidebar-footer">
           <span className="role-pill">{isAdmin ? "Administrador" : "Funcionário"}</span>
+          {isAdmin && hasHistorySchema && data.profiles.some((user) => user.approved === false) && (
+            <button className="pending-users-pill" onClick={() => setView("users")}>
+              {data.profiles.filter((user) => user.approved === false).length} conta(s) aguardando aprovação
+            </button>
+          )}
           <button className="button ghost full" onClick={handleSignOut}>
             {icons.lock}
             Sair
@@ -1056,6 +1352,7 @@ function App() {
             onAddEnrollment={handleAddEnrollment}
             onCancelEdit={() => setEditingEnrollment(null)}
             onUpdateEnrollment={handleUpdateEnrollment}
+            hasHistorySchema={hasHistorySchema}
             onEnrollmentStatus={handleEnrollmentStatus}
             onDeleteStudent={handleDeleteStudent}
           />
@@ -1082,10 +1379,14 @@ function App() {
           <UsersView
             currentUserId={session.user.id}
             profiles={data.profiles}
+            hasHistorySchema={hasHistorySchema}
+            onApproveProfile={handleApproveProfile}
             onUpdateProfile={handleUpdateProfile}
           />
         )}
       </main>
+
+      {dialog && <ConfirmDialog dialog={dialog} onClose={closeDialog} />}
 
       {toast && (
         <div className="toast" role="status">
@@ -1120,7 +1421,7 @@ function LoadingScreen() {
       <section className="auth-card">
         <span className="brand-mark dark">{icons.music}</span>
         <h1>Carregando</h1>
-        <p>Verificando sessão no Supabase.</p>
+        <p>Verificando sua sessão...</p>
       </section>
     </main>
   );
@@ -1141,7 +1442,7 @@ function AuthScreen() {
     const response = await supabase.auth.signInWithPassword({ email, password });
 
     if (response.error) {
-      setMessage(response.error.message);
+      setMessage(translateError(response.error));
     }
 
     setLoading(false);
@@ -1152,20 +1453,24 @@ function AuthScreen() {
       <section className="auth-card">
         <span className="brand-mark dark">{icons.music}</span>
         <h1>Mensalidades</h1>
-        <p>Acesso interno para funcionários cadastrados no Supabase Auth.</p>
+        <p>Acesso restrito à equipe da escola.</p>
 
         <form onSubmit={handleAuth} className="auth-form">
           <label className="field">
-            <span>Email</span>
-            <input name="email" type="email" required placeholder="email@exemplo.com" />
+            <span>E-mail</span>
+            <input name="email" type="email" required autoComplete="email" placeholder="email@exemplo.com" />
           </label>
 
           <label className="field">
             <span>Senha</span>
-            <input name="password" type="password" minLength="6" required placeholder="Sua senha" />
+            <input name="password" type="password" minLength="6" required autoComplete="current-password" placeholder="Sua senha" />
           </label>
 
-          {message && <p className="form-message">{message}</p>}
+          {message && (
+            <p className="form-message" role="alert">
+              {message}
+            </p>
+          )}
 
           <button className="button primary full" disabled={loading}>
             {loading ? "Aguarde..." : "Entrar"}
@@ -1173,6 +1478,66 @@ function AuthScreen() {
         </form>
       </section>
     </main>
+  );
+}
+
+function PendingApprovalScreen({ email, onSignOut }) {
+  return (
+    <main className="auth-screen">
+      <section className="auth-card">
+        <span className="brand-mark dark">{icons.lock}</span>
+        <h1>Aguardando aprovação</h1>
+        <p>
+          Sua conta ({email}) foi criada, mas ainda precisa ser liberada por um administrador da escola.
+          Assim que ela for aprovada, é só entrar de novo.
+        </p>
+        <button className="button secondary full" onClick={onSignOut}>
+          Sair
+        </button>
+      </section>
+    </main>
+  );
+}
+
+function ConfirmDialog({ dialog, onClose }) {
+  const confirmRef = useRef(null);
+
+  useEffect(() => {
+    confirmRef.current?.focus();
+    function onKey(event) {
+      if (event.key === "Escape") onClose(false);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={() => onClose(false)}>
+      <section
+        className="modal-card"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirm-title"
+        aria-describedby="confirm-text"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <h2 id="confirm-title">{dialog.title}</h2>
+        {dialog.message && <p id="confirm-text">{dialog.message}</p>}
+        <div className="modal-actions">
+          <button className="button secondary" type="button" onClick={() => onClose(false)}>
+            {dialog.cancelLabel || "Cancelar"}
+          </button>
+          <button
+            ref={confirmRef}
+            className={`button ${dialog.danger ? "danger" : "primary"}`}
+            type="button"
+            onClick={() => onClose(true)}
+          >
+            {dialog.confirmLabel || "Confirmar"}
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -1185,10 +1550,13 @@ function PaymentsView(props) {
 
   useEffect(() => {
     if (!props.selectedEnrollment || !props.paymentPanelRef?.current) return;
-    if (props.paymentOrigin !== "pending") return;
     const panel = props.paymentPanelRef.current;
     const timer = window.setTimeout(() => {
-      panel.scrollIntoView({ behavior: "smooth", block: "start" });
+      const rect = panel.getBoundingClientRect();
+      const isSmallScreen = window.matchMedia("(max-width: 1080px)").matches;
+      const outOfView = rect.top < 0 || rect.top > window.innerHeight * 0.6;
+      if (props.paymentOrigin !== "pending" && !isSmallScreen && !outOfView) return;
+      panel.scrollIntoView({ behavior: "smooth", block: "start", inline: "nearest" });
       const focusable = panel.querySelector("input, select, textarea, button");
       if (focusable) focusable.focus({ preventScroll: true });
     }, 80);
@@ -1219,6 +1587,7 @@ function PaymentsView(props) {
           <EnrollmentTable
             enrollments={props.filteredEnrollments}
             context="payments"
+            month={props.month}
             isAdmin={props.isAdmin}
             onSelect={props.setSelectedEnrollment}
           />
@@ -1260,7 +1629,7 @@ function PaymentsView(props) {
 function PendingView({ isAdmin, month, pendingEnrollments, totals, onSelectEnrollment }) {
   const today = localDate();
   const dueTodayCount = pendingEnrollments.filter(
-    (enrollment) => `${month}-${String(enrollment.due_day).padStart(2, "0")}` === today,
+    (enrollment) => dueDateFor(month, enrollment.due_day) === today,
   ).length;
 
   return (
@@ -1293,13 +1662,13 @@ function PendingView({ isAdmin, month, pendingEnrollments, totals, onSelectEnrol
             <p>Matrículas ativas sem pagamento lançado em {monthLabel(month)}.</p>
           </div>
         </div>
-        <PendingTable enrollments={pendingEnrollments} isAdmin={isAdmin} onSelectEnrollment={onSelectEnrollment} />
+        <PendingTable enrollments={pendingEnrollments} isAdmin={isAdmin} month={month} onSelectEnrollment={onSelectEnrollment} />
       </section>
     </>
   );
 }
 
-function PendingTable({ enrollments, isAdmin, onSelectEnrollment }) {
+function PendingTable({ enrollments, isAdmin, month, onSelectEnrollment }) {
   if (!enrollments.length) {
     return <EmptyState title="Tudo certo por aqui" text="Não há pendências no mês selecionado." />;
   }
@@ -1329,7 +1698,7 @@ function PendingTable({ enrollments, isAdmin, onSelectEnrollment }) {
                   <GuardianCell enrollment={enrollment} />
                 </td>
                 <td>{enrollment.modalityName}</td>
-                <td>Dia {enrollment.due_day}</td>
+                <td>Dia {effectiveDueDay(month, enrollment.due_day)}</td>
                 {isAdmin && <td>{formatMoney(enrollment.monthly_value)}</td>}
                 <td>
                   <span className={`badge ${enrollment.paymentStatusClass}`}>{enrollment.paymentStatusLabel}</span>
@@ -1357,7 +1726,7 @@ function PendingTable({ enrollments, isAdmin, onSelectEnrollment }) {
             </div>
             <div className="list-card-body">
               <span>Resp.: {enrollment.guardianName}</span>
-              <span>Vence dia {enrollment.due_day}</span>
+              <span>Vence dia {effectiveDueDay(month, enrollment.due_day)}</span>
               {isAdmin && <span>{formatMoney(enrollment.monthly_value)}</span>}
             </div>
             <div className="list-card-actions">
@@ -1380,22 +1749,28 @@ function StudentsView(props) {
     <section className="split-grid">
       <div>
         <EnrollmentFilters {...props} />
+        <p className="hint-line">Toque numa modalidade para pausar ou ativar só ela. Em Editar dá para mudar valor, vencimento ou adicionar e remover modalidades.</p>
         <EnrollmentTable
           enrollments={props.filteredEnrollments}
           context="students"
           isAdmin={props.isAdmin}
-          onEditEnrollment={props.setEditingEnrollment}
+          onEditEnrollment={(group) => {
+            props.setEditingEnrollment(group);
+            window.setTimeout(() => {
+              document.querySelector(".student-form-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+            }, 60);
+          }}
           onEnrollmentStatus={props.onEnrollmentStatus}
           onDeleteStudent={props.onDeleteStudent}
         />
       </div>
-      <aside className="panel sticky-panel">
+      <aside className="panel sticky-panel student-form-panel">
         <div className="panel-header">
           <div>
-            <h2>{isEditing ? "Editar matrícula" : "Novo cadastro"}</h2>
+            <h2>{isEditing ? `Editar ${props.editingEnrollment.studentName}` : "Novo cadastro"}</h2>
             <p>
               {isEditing
-                ? "Atualize aluno, responsável, modalidade, valor e status."
+                ? "Atualize aluno, responsável e cada modalidade (valor, vencimento e status)."
                 : "Cadastre o responsável, o aluno e uma ou mais modalidades."}
             </p>
           </div>
@@ -1428,7 +1803,10 @@ function ReportsView({
   onReportStart,
   onUpdatePayment,
 }) {
-  const byModality = groupPaymentItems(data.payments, (item) => item.enrollment?.modality?.name || "Sem modalidade");
+  const byModality = groupPaymentItems(
+    data.payments,
+    (item) => item.modality_name || item.enrollment?.modality?.name || "Sem modalidade",
+  );
   const byDay = groupPayments(data.payments, (payment) => formatDate(payment.paid_at));
   const chartPayments = useMemo(
     () => chartScopePayments(data.chartPayments || data.payments, 12),
@@ -1539,47 +1917,87 @@ function ReportsView({
   );
 }
 
-function UsersView({ currentUserId, profiles, onUpdateProfile }) {
+function UsersView({ currentUserId, hasHistorySchema, profiles, onApproveProfile, onUpdateProfile }) {
+  const pending = hasHistorySchema ? profiles.filter((user) => user.approved === false) : [];
+  const others = hasHistorySchema ? profiles.filter((user) => user.approved !== false) : profiles;
+
   return (
-    <section className="panel">
-      <div className="panel-header">
-        <div>
-          <h2>Usuários e permissões</h2>
-          <p>Defina quem é administrador e quem é funcionário.</p>
-        </div>
-      </div>
-      <div className="table-wrap">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th className="sticky-col">Nome</th>
-              <th>Email</th>
-              <th>Perfil</th>
-              <th>Ação</th>
-            </tr>
-          </thead>
-          <tbody>
-            {profiles.map((user) => (
-              <tr key={user.id}>
-                <td colSpan="4">
-                  <form className="user-row" onSubmit={(event) => onUpdateProfile(event, user.id)}>
-                    <input name="full_name" defaultValue={user.full_name} placeholder="Nome do usuário" />
-                    <span>{user.email || user.id}</span>
-                    <select name="role" defaultValue={user.role} disabled={user.id === currentUserId}>
-                      <option value="staff">Funcionário</option>
-                      <option value="admin">Administrador</option>
-                    </select>
-                    <button className="table-action primary" disabled={user.id === currentUserId}>
-                      Salvar
-                    </button>
-                  </form>
-                </td>
-              </tr>
+    <>
+      {pending.length > 0 && (
+        <section className="panel approval-panel">
+          <div className="panel-header">
+            <div>
+              <h2>Aguardando aprovação</h2>
+              <p>Contas novas não veem nenhum dado até você liberar.</p>
+            </div>
+          </div>
+          <div className="panel-body user-grid">
+            {pending.map((user) => (
+              <article className="user-card pending" key={user.id}>
+                <div className="user-card-id">
+                  <strong>{user.full_name || "Sem nome"}</strong>
+                  <span>{user.email || user.id}</span>
+                  <small>Criada em {formatDate(String(user.created_at || "").slice(0, 10))}</small>
+                </div>
+                <div className="user-card-actions">
+                  <button className="button primary" onClick={() => onApproveProfile(user, true)}>
+                    {icons.check} Aprovar
+                  </button>
+                </div>
+              </article>
             ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
+          </div>
+        </section>
+      )}
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h2>Usuários e permissões</h2>
+            <p>Defina quem é administrador, quem é funcionário e quem tem acesso.</p>
+          </div>
+        </div>
+        <div className="panel-body user-grid">
+          {others.map((user) => {
+            const isSelf = user.id === currentUserId;
+            return (
+              <form className="user-card" key={user.id} onSubmit={(event) => onUpdateProfile(event, user.id)}>
+                <label className="field">
+                  <span>Nome</span>
+                  <input name="full_name" defaultValue={user.full_name} placeholder="Nome do usuário" />
+                </label>
+                <div className="user-card-email">
+                  <span>E-mail</span>
+                  <strong>{user.email || user.id}</strong>
+                </div>
+                <label className="field">
+                  <span>Perfil</span>
+                  <select name="role" defaultValue={user.role} disabled={isSelf}>
+                    <option value="staff">Funcionário</option>
+                    <option value="admin">Administrador</option>
+                  </select>
+                </label>
+                {hasHistorySchema && (
+                  <label className="field">
+                    <span>Acesso</span>
+                    <select name="approved" defaultValue={user.approved === false ? "false" : "true"} disabled={isSelf}>
+                      <option value="true">Liberado</option>
+                      <option value="false">Bloqueado</option>
+                    </select>
+                  </label>
+                )}
+                <div className="user-card-actions">
+                  {isSelf ? (
+                    <span className="muted">Este é você</span>
+                  ) : (
+                    <button className="button primary">Salvar</button>
+                  )}
+                </div>
+              </form>
+            );
+          })}
+        </div>
+      </section>
+    </>
   );
 }
 
@@ -1597,7 +2015,7 @@ function EnrollmentFilters({
       <div className="panel-header">
         <div>
           <h2>Cadastros e situação</h2>
-          <p>Filtre por aluno, responsável, email, telefone, modalidade ou status.</p>
+          <p>Filtre por aluno, responsável, e-mail, telefone, modalidade ou status.</p>
         </div>
       </div>
       <div className="panel-body search-box">
@@ -1605,7 +2023,7 @@ function EnrollmentFilters({
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           type="search"
-          placeholder="Buscar aluno, responsável, email ou modalidade"
+          placeholder="Buscar aluno, responsável, e-mail ou modalidade"
         />
         <select value={modalityFilter} onChange={(event) => setModalityFilter(event.target.value)}>
           <option value="all">Todas as modalidades</option>
@@ -1635,6 +2053,7 @@ function EnrollmentTable({
   onEditEnrollment,
   onSelect,
   onEnrollmentStatus,
+  month = currentMonth(),
 }) {
   if (!enrollments.length) {
     return <EmptyState title="Nenhum cadastro encontrado" text="Altere os filtros ou cadastre um novo aluno." />;
@@ -1642,6 +2061,32 @@ function EnrollmentTable({
 
   // Staff: hide money overview on payments/pending tables; Cadastros still shows values for editing.
   const showMensalidade = isAdmin || context === "students";
+
+  function renderModalities(enrollment) {
+    const rows = enrollment.rows || [];
+    if (context !== "students" || !rows.length) return enrollment.modalityName;
+    return (
+      <span className="modality-chips">
+        {rows.map((row) => {
+          const active = row.status === "active";
+          return (
+            <button
+              type="button"
+              key={row.id}
+              className={`modality-chip ${active ? "is-active" : "is-paused"}`}
+              title={active ? `Clique para pausar ${row.modalityName}` : `Clique para ativar ${row.modalityName}`}
+              aria-label={`${row.modalityName}: ${active ? "ativa, clique para pausar" : "pausada, clique para ativar"}`}
+              onClick={() => onEnrollmentStatus(row)}
+            >
+              <span className="chip-dot" aria-hidden="true" />
+              {row.modalityName}
+              <small>{active ? "Ativa" : row.status === "cancelled" ? "Cancelada" : "Pausada"}</small>
+            </button>
+          );
+        })}
+      </span>
+    );
+  }
 
   function renderActions(enrollment) {
     const canPay = enrollment.paymentStatusKey === "pending" || enrollment.paymentStatusKey === "late";
@@ -1666,14 +2111,8 @@ function EnrollmentTable({
 
     return (
       <span className="table-actions">
-        <button
-          className="table-action secondary"
-          onClick={() => onEditEnrollment(enrollment.primaryEnrollment || enrollment)}
-        >
+        <button className="table-action secondary" onClick={() => onEditEnrollment(enrollment)}>
           Editar
-        </button>
-        <button className="table-action secondary" onClick={() => onEnrollmentStatus(enrollment)}>
-          {enrollment.status === "active" ? "Pausar" : "Ativar"}
         </button>
         <button className="table-action danger" onClick={() => onDeleteStudent(enrollment)}>
           {icons.trash}
@@ -1707,8 +2146,8 @@ function EnrollmentTable({
                 <td>
                   <GuardianCell enrollment={enrollment} />
                 </td>
-                <td>{enrollment.modalityName}</td>
-                <td>Dia {enrollment.due_day}</td>
+                <td>{renderModalities(enrollment)}</td>
+                <td>Dia {effectiveDueDay(month, enrollment.due_day)}</td>
                 {showMensalidade && <td>{formatMoney(enrollment.monthly_value)}</td>}
                 <td>
                   <span className={`badge ${enrollment.paymentStatusClass}`}>{enrollment.paymentStatusLabel}</span>
@@ -1725,13 +2164,14 @@ function EnrollmentTable({
             <div className="list-card-head">
               <div>
                 <strong>{enrollment.studentName}</strong>
-                <span className="list-card-meta">{enrollment.modalityName}</span>
+                {context !== "students" && <span className="list-card-meta">{enrollment.modalityName}</span>}
               </div>
               <span className={`badge ${enrollment.paymentStatusClass}`}>{enrollment.paymentStatusLabel}</span>
             </div>
+            {context === "students" && <div className="list-card-chips">{renderModalities(enrollment)}</div>}
             <div className="list-card-body">
               <span>Resp.: {enrollment.guardianName}</span>
-              <span>Vence dia {enrollment.due_day}</span>
+              <span>Vence dia {effectiveDueDay(month, enrollment.due_day)}</span>
               {showMensalidade && <span>{formatMoney(enrollment.monthly_value)}</span>}
             </div>
             <div className="list-card-actions">{renderActions(enrollment)}</div>
@@ -1934,9 +2374,55 @@ function EnrollmentForm({ modalities, onCancel, onSubmit, enrollment }) {
   const isEditing = Boolean(enrollment);
   const guardian = enrollment?.guardian;
   const student = enrollment?.student;
+  const [rows, setRows] = useState(() =>
+    (enrollment?.rows || (enrollment ? [enrollment] : [])).map((row) => ({
+      key: row.id,
+      id: row.id,
+      modality_id: row.modality?.id || row.modality_id || "",
+      modalityName: row.modalityName || row.modality?.name || "",
+      monthly_value: row.monthly_value ?? "0",
+      due_day: row.due_day ?? 10,
+      status: row.status || "active",
+      notes: row.notes || "",
+      removed: false,
+    })),
+  );
+
+  function updateRow(key, patch) {
+    setRows((current) => current.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+  }
+
+  function addRow() {
+    const used = new Set(rows.filter((row) => !row.removed).map((row) => row.modality_id));
+    const next = modalities.find((modality) => !used.has(modality.id));
+    setRows((current) => [
+      ...current,
+      {
+        key: `new-${Date.now()}`,
+        id: null,
+        modality_id: next?.id || "",
+        modalityName: next?.name || "",
+        monthly_value: next?.default_monthly_value ?? "0",
+        due_day: current.find((row) => !row.removed)?.due_day ?? 10,
+        status: "active",
+        notes: "",
+        removed: false,
+      },
+    ]);
+  }
+
+  const modalityOptions = useMemo(() => {
+    const list = [...modalities];
+    for (const row of rows) {
+      if (row.modality_id && !list.some((modality) => modality.id === row.modality_id)) {
+        list.push({ id: row.modality_id, name: row.modalityName || "Modalidade inativa", default_monthly_value: 0 });
+      }
+    }
+    return list;
+  }, [modalities, rows]);
 
   return (
-    <form onSubmit={onSubmit}>
+    <form onSubmit={(event) => (isEditing ? onSubmit(event, rows) : onSubmit(event))}>
       <div className="form-grid">
         <label className="field wide">
           <span>Aluno</span>
@@ -1951,38 +2437,106 @@ function EnrollmentForm({ modalities, onCancel, onSubmit, enrollment }) {
           <input name="guardian_name" placeholder="Nome do responsável" defaultValue={guardian?.full_name || ""} />
         </label>
         <label className="field">
-          <span>Email do responsavel</span>
+          <span>E-mail do responsável</span>
           <input name="guardian_email" type="email" placeholder="responsavel@email.com" defaultValue={guardian?.email || ""} />
         </label>
         <label className="field">
-          <span>Telefone responsável</span>
+          <span>Telefone do responsável</span>
           <input name="guardian_phone" placeholder="(00) 00000-0000" defaultValue={guardian?.phone || ""} />
         </label>
 
         {isEditing ? (
-          <>
-            <label className="field">
-              <span>Modalidade</span>
-              <select name="modality_id" required defaultValue={enrollment.modality?.id || ""}>
-                {modalities.map((modality) => (
-                  <option key={modality.id} value={modality.id}>
-                    {modality.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field">
-              <span>Mensalidade</span>
-              <input
-                name="monthly_value"
-                type="number"
-                min="0"
-                step="0.01"
-                defaultValue={enrollment.monthly_value || "150"}
-                required
-              />
-            </label>
-          </>
+          <fieldset className="field wide enrollment-rows">
+            <legend>Modalidades do aluno</legend>
+            {rows.map((row) =>
+              row.removed ? (
+                <div className="enrollment-row removed" key={row.key}>
+                  <span>
+                    <strong>{row.modalityName || "Modalidade"}</strong> será removida (o histórico fica).
+                  </span>
+                  <button type="button" className="table-action secondary" onClick={() => updateRow(row.key, { removed: false })}>
+                    Desfazer
+                  </button>
+                </div>
+              ) : (
+                <div className={`enrollment-row status-${row.status}`} key={row.key}>
+                  <label className="field">
+                    <span>Modalidade</span>
+                    <select
+                      value={row.modality_id}
+                      required
+                      onChange={(event) => {
+                        const modality = modalityOptions.find((item) => item.id === event.target.value);
+                        updateRow(row.key, {
+                          modality_id: event.target.value,
+                          modalityName: modality?.name || "",
+                          ...(row.id ? {} : { monthly_value: modality?.default_monthly_value ?? row.monthly_value }),
+                        });
+                      }}
+                    >
+                      <option value="" disabled>
+                        Escolha...
+                      </option>
+                      {modalityOptions.map((modality) => (
+                        <option key={modality.id} value={modality.id}>
+                          {modality.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Mensalidade</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={row.monthly_value}
+                      onChange={(event) => updateRow(row.key, { monthly_value: event.target.value })}
+                      required
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Vence dia</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="31"
+                      value={row.due_day}
+                      onChange={(event) => updateRow(row.key, { due_day: event.target.value })}
+                      required
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Status</span>
+                    <select value={row.status} onChange={(event) => updateRow(row.key, { status: event.target.value })}>
+                      <option value="active">Ativa</option>
+                      <option value="paused">Pausada</option>
+                      <option value="cancelled">Cancelada</option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="table-action danger enrollment-remove"
+                    onClick={() =>
+                      row.id
+                        ? updateRow(row.key, { removed: true })
+                        : setRows((current) => current.filter((item) => item.key !== row.key))
+                    }
+                    aria-label={`Remover ${row.modalityName || "modalidade"}`}
+                  >
+                    {icons.trash}
+                    Remover
+                  </button>
+                </div>
+              ),
+            )}
+            <button type="button" className="button secondary add-modality" onClick={addRow}>
+              {icons.plus} Adicionar modalidade
+            </button>
+            {Number(rows.find((row) => !row.removed)?.due_day) > 28 && (
+              <small className="muted">Em meses mais curtos, o vencimento cai no último dia do mês.</small>
+            )}
+          </fieldset>
         ) : (
           <fieldset className="field wide modality-picker">
             <legend>Modalidades</legend>
@@ -2005,24 +2559,18 @@ function EnrollmentForm({ modalities, onCancel, onSubmit, enrollment }) {
           </fieldset>
         )}
 
-        <label className="field">
-          <span>Vencimento</span>
-          <input name="due_day" type="number" min="1" max="31" defaultValue={enrollment?.due_day || "10"} required />
-        </label>
-        {isEditing && (
+        {!isEditing && (
           <label className="field">
-            <span>Status</span>
-            <select name="status" defaultValue={enrollment.status}>
-              <option value="active">Ativo</option>
-              <option value="paused">Pausado</option>
-              <option value="cancelled">Cancelado</option>
-            </select>
+            <span>Vencimento (dia)</span>
+            <input name="due_day" type="number" min="1" max="31" defaultValue="10" required />
           </label>
         )}
-        <label className="field wide">
-          <span>Observações</span>
-          <textarea name="notes" placeholder="Horário, desconto, observações..." defaultValue={enrollment?.notes || ""} />
-        </label>
+        {!isEditing && (
+          <label className="field wide">
+            <span>Observações</span>
+            <textarea name="notes" placeholder="Horário, desconto, observações..." />
+          </label>
+        )}
       </div>
       <div className="button-row form-actions">
         <button className="button primary">{isEditing ? "Salvar alterações" : "Cadastrar"}</button>
@@ -2068,8 +2616,6 @@ function MonthlyReceivedChart({ series, methods = [] }) {
           <svg
             className="monthly-chart"
             viewBox={`0 0 ${width} ${height}`}
-            width={width}
-            height={height}
             preserveAspectRatio="xMidYMid meet"
             role="img"
             aria-label="Gráfico de valores recebidos por mês"
@@ -2086,9 +2632,23 @@ function MonthlyReceivedChart({ series, methods = [] }) {
               const barHeight = item.amount > 0 ? Math.max(8, rawHeight) : 2;
               const x = leftPad + index * (barWidth + barGap);
               const y = topPad + chartHeight - barHeight;
+              let stackY = topPad + chartHeight;
+              const segments = paymentMethods
+                .map((method) => method.value)
+                .concat(Object.keys(item.byMethod || {}).filter((key) => !methodColors[key] || key === "other"))
+                .filter((key, position, list) => list.indexOf(key) === position && item.byMethod?.[key] > 0)
+                .map((key) => {
+                  const segmentHeight = (item.byMethod[key] / item.amount) * barHeight;
+                  stackY -= segmentHeight;
+                  return { key, y: stackY, height: segmentHeight };
+                });
               return (
                 <g key={item.month}>
-                  <title>{`${item.label}: ${formatMoney(item.amount)}`}</title>
+                  <title>
+                    {`${item.label}: ${formatMoney(item.amount)}${Object.entries(item.byMethod || {})
+                      .map(([key, value]) => `\n${paymentMethodLabel(key)}: ${formatMoney(value)}`)
+                      .join("")}`}
+                  </title>
                   <rect
                     className="monthly-bar-track"
                     x={x}
@@ -2097,14 +2657,27 @@ function MonthlyReceivedChart({ series, methods = [] }) {
                     height={chartHeight}
                     rx="8"
                   />
-                  <rect
-                    className={item.amount > 0 ? "monthly-bar" : "monthly-bar monthly-bar-stub"}
-                    x={x}
-                    y={y}
-                    width={barWidth}
-                    height={barHeight}
-                    rx={item.amount > 0 ? "8" : "2"}
-                  />
+                  {item.amount > 0 ? (
+                    <>
+                      <clipPath id={`bar-clip-${item.month}`}>
+                        <rect x={x} y={y} width={barWidth} height={barHeight} rx="8" />
+                      </clipPath>
+                      <g clipPath={`url(#bar-clip-${item.month})`} className="monthly-bar-stack">
+                        {segments.map((segment) => (
+                          <rect
+                            key={segment.key}
+                            x={x}
+                            y={segment.y}
+                            width={barWidth}
+                            height={segment.height + 0.5}
+                            fill={methodColor(segment.key)}
+                          />
+                        ))}
+                      </g>
+                    </>
+                  ) : (
+                    <rect className="monthly-bar monthly-bar-stub" x={x} y={y} width={barWidth} height={barHeight} rx="2" />
+                  )}
                   {item.amount > 0 && (
                     <text className="monthly-value" x={x + barWidth / 2} y={y - 8} textAnchor="middle">
                       {formatCompactMoney(item.amount)}
@@ -2123,6 +2696,14 @@ function MonthlyReceivedChart({ series, methods = [] }) {
             })}
           </svg>
         </div>
+        <ul className="chart-legend" aria-label="Legenda das formas de pagamento">
+          {paymentMethods.map((method) => (
+            <li key={method.value}>
+              <span className="legend-dot" style={{ background: methodColor(method.value) }} />
+              {method.label}
+            </li>
+          ))}
+        </ul>
 
         <div className="method-breakdown">
           <div className="method-breakdown-header">
@@ -2137,9 +2718,12 @@ function MonthlyReceivedChart({ series, methods = [] }) {
           {methods.length ? (
             <div className="method-breakdown-grid">
               {methods.map((item) => (
-                <article className="method-card" key={item.value}>
+                <article className="method-card" key={item.value} style={{ "--method-color": methodColor(item.value) }}>
                   <div className="method-card-top">
-                    <strong>{item.label}</strong>
+                    <strong>
+                      <span className="legend-dot" style={{ background: methodColor(item.value) }} />
+                      {item.label}
+                    </strong>
                     <span className="method-count">
                       {item.count} {item.count === 1 ? "pagamento" : "pagamentos"}
                     </span>
@@ -2148,7 +2732,10 @@ function MonthlyReceivedChart({ series, methods = [] }) {
                   <span className="method-track" aria-hidden="true">
                     <span
                       className="method-fill"
-                      style={{ width: `${Math.max(10, (item.amount / methodMax) * 100)}%` }}
+                      style={{
+                        width: `${Math.max(10, (item.amount / methodMax) * 100)}%`,
+                        background: methodColor(item.value),
+                      }}
                     />
                   </span>
                 </article>
@@ -2264,7 +2851,7 @@ function getPaymentStatus(enrollment, paymentStatus, month) {
     return { key: "paid", label: "Pago", className: "success" };
   }
 
-  const dueDate = `${month}-${String(enrollment.due_day).padStart(2, "0")}`;
+  const dueDate = dueDateFor(month, enrollment.due_day);
   if (month < currentMonth() || dueDate < localDate()) {
     return { key: "late", label: "Atrasado", className: "danger" };
   }
@@ -2319,8 +2906,9 @@ function profileLabel(profile) {
 
 function paymentPayerLabel(payment) {
   if (payment.payer?.full_name) return payment.payer.full_name;
+  if (payment.payer_name) return payment.payer_name;
   const firstItem = payment.items?.[0];
-  return firstItem?.enrollment?.student?.full_name || "Responsável não informado";
+  return firstItem?.student_name || firstItem?.enrollment?.student?.full_name || "Responsável não informado";
 }
 
 function paymentItemsLabel(payment) {
@@ -2329,8 +2917,8 @@ function paymentItemsLabel(payment) {
 
   return items
     .map((item) => {
-      const student = item.enrollment?.student?.full_name || "Aluno";
-      const modality = item.enrollment?.modality?.name || "Modalidade";
+      const student = item.student_name || item.enrollment?.student?.full_name || "Aluno";
+      const modality = item.modality_name || item.enrollment?.modality?.name || "Modalidade";
       return `${student} - ${modality}`;
     })
     .join(", ");
